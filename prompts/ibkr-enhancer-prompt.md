@@ -182,3 +182,34 @@ digest, and per-underlying P&L history from repeated CSV copies.
 If anything in this brief conflicts with what the fixtures or the live page
 actually show, the page wins: flag the conflict in your Phase 0 report instead
 of silently building around it.
+
+## Phase 0 corrections (21 Oct 2026, fixture-verified, supersede the brief above)
+
+Phase 0 ran against the real fixtures (34 positions rows, 23 orders rows,
+parsed offline). Where this section and the brief disagree, this section wins:
+
+1. Orders Price column is empty (em dash) on every row. Parse limit price and
+   TIF from the Orders cell's second line (`Limit 4.65, GTC`).
+2. Order id is the row's `data-id` attribute, corroborated by the Order id
+   column. It is NOT a row `id`. On Positions, `data-id` is a 1-2 digit row
+   index, never an identity.
+3. "Net Liquidation Value" does not appear as a label in the Positions HTML.
+   NLV anchor is positional (Zonito's ruling, option (b+)): the headline value
+   in the account header, in the sequence alias + account id + currency ->
+   value -> signed day change, cross-verified against his broker board.
+   Cushion = Excess Liquidity / headline value. Fail-safe is mandatory: if
+   that exact pattern does not match, show the labelled fields only and no
+   cushion. The margin bar must display the account alias it read (account-in-
+   view scoping is unproven), and Phase 1 live checks must include an account
+   switch.
+4. Positions instrument: use the row `aria-label` first (clean descriptor);
+   cell text appends the company name after Put/Call, so the instrument regex
+   must not be anchored at the tail. Orders rows have empty `aria-label`; use
+   cell line 1.
+5. IV Rank / IV Pctl are populated only on equity rows in the fixture and are
+   em dash on all option rows. Last carries a `C` prefix on most rows.
+6. The second Positions table (`_tb392`, Currency/Amount) is Cash Holdings,
+   out of scope. The trailing unnamed Orders column is a row-action
+   affordance: never clicked.
+7. Status format on Orders is a single combined shape:
+   `Submitted M/D/YYYY, H:MM AM/PM` (US date format).
