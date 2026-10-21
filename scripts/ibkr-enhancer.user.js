@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.6.0
+// @version      0.7.0
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -326,11 +326,21 @@
       underlying: m[1], type: m[6].toLowerCase(), expiry: expiry,
       expiryISO: expiry.toISOString().slice(0, 10), strike: parseNumber(m[5]) };
   }
-  function buildPositionsSnapshot(positions, savedAt) {
-    return { savedAt: savedAt || null, positions: (positions || []).map(function (r) {
+  function buildPositionsSnapshot(positions, savedAt, alias) {
+    return { savedAt: savedAt || null, alias: alias || null, positions: (positions || []).map(function (r) {
       return { underlying: r.underlying, expiryISO: r.expiryISO || null, strike: r.strike, type: r.type,
-        qty: r.qty, avgPrice: r.avgPrice };
+        qty: r.qty, avgPrice: r.avgPrice, last: (r.last !== undefined ? r.last : null) };
     }) };
+  }
+  function ticketFillPlan(pos, opts) {
+    opts = opts || {};
+    if (!pos) return { blocked: 'NO_MATCH' };
+    if (opts.staleSnapshot) return { blocked: 'STALE_SNAPSHOT' };
+    if (opts.aliasMismatch) return { blocked: 'ALIAS_MISMATCH' };
+    var limit = gtcTargetLimit(pos.avgPrice);
+    if (limit === null || limit <= 0 || (pos.avgPrice !== null && pos.avgPrice !== undefined && limit >= pos.avgPrice)) return { blocked: 'BAD_TARGET' };
+    return { blocked: null, qty: Math.abs(pos.qty), limit: limit, avgPrice: pos.avgPrice,
+      capturePct: (1 - (limit / pos.avgPrice)) * 100, last: (pos.last !== undefined ? pos.last : null) };
   }
   function findShortPosition(positions, key) {
     if (!key) return null;
@@ -425,7 +435,7 @@
     isTerminalStatus: isTerminalStatus, isOpenOrder: isOpenOrder, summarizeOrders: summarizeOrders,
     defaultFilterState: defaultFilterState, filterIsActive: filterIsActive, matchesRowFilters: matchesRowFilters,
     buildOrdersSnapshot: buildOrdersSnapshot, gtcTargetLimit: gtcTargetLimit, gtcChipState: gtcChipState, wingPairState: wingPairState, ccCoverageState: ccCoverageState,
-    parseInstrumentSearch: parseInstrumentSearch, buildPositionsSnapshot: buildPositionsSnapshot, findShortPosition: findShortPosition,
+    parseInstrumentSearch: parseInstrumentSearch, buildPositionsSnapshot: buildPositionsSnapshot, findShortPosition: findShortPosition, ticketFillPlan: ticketFillPlan,
     positionsToCsv: positionsToCsv, ordersToCsv: ordersToCsv };
   if (typeof module !== 'undefined' && module.exports) module.exports = PARSER;
 
@@ -687,7 +697,9 @@
     Array.prototype.forEach.call(document.querySelectorAll(selector), function (n) { n.remove(); });
   }
 
+  var lastAccountAlias = null;
   function renderMarginBar(ctx) {
+    if (ctx && ctx.alias) lastAccountAlias = ctx.alias;
     removeInjected('[data-ibkr-enhancer="bar"]');
     removeInjected('[data-ibkr-enhancer="dock"]');
     if (!getSetting('marginBar')) { removeInjected('[data-ibkr-enhancer="details"]'); return; }
@@ -810,7 +822,7 @@
   function enhancePositions(found) {
     var rows = readPositions(found);
     liveRows.positions = rows;
-    try { setSetting('positionsSnapshot', buildPositionsSnapshot(rows, new Date().toISOString())); } catch (e) { /* silent */ }
+    try { setSetting('positionsSnapshot', buildPositionsSnapshot(rows, new Date().toISOString(), lastAccountAlias)); } catch (e) { /* silent */ }
     var visible = dataRows(found).length;
     log('positions parsed ' + rows.length + ' / visible ' + visible);
     var equityLast = {};
@@ -1115,40 +1127,103 @@
     if (!closeSelected) { removeInjected('[data-ibkr-enhancer="ticketfill"]'); return; }
     var key = parseInstrumentSearch(spacedText(ticket));
     if (!key) { removeInjected('[data-ibkr-enhancer="ticketfill"]'); return; }
+    var snapObj = null, usingSnapshot = false;
     var source = (liveRows.positions && liveRows.positions.length) ? liveRows.positions : null;
     if (!source) {
-      try { var snap = getSetting('positionsSnapshot'); source = snap && snap.positions ? snap.positions : null; } catch (e) { source = null; }
+      try { snapObj = getSetting('positionsSnapshot'); source = snapObj && snapObj.positions ? snapObj.positions : null; usingSnapshot = !!source; } catch (e) { source = null; }
     }
     var pos = findShortPosition(source, key);
-    if (!pos) { removeInjected('[data-ibkr-enhancer="ticketfill"]'); return; }
+    var staleSnapshot = false, aliasMismatch = false;
+    if (usingSnapshot && snapObj) {
+      staleSnapshot = !snapObj.savedAt || (Date.now() - new Date(snapObj.savedAt).getTime() > 24 * 3600 * 1000);
+      var curAlias = null;
+      try { var ctxNow = findAccountContext(); curAlias = ctxNow && ctxNow.alias ? ctxNow.alias : null; } catch (e) { curAlias = null; }
+      aliasMismatch = !!(snapObj.alias && curAlias && snapObj.alias !== curAlias);
+    }
+    var plan = ticketFillPlan(pos, { staleSnapshot: staleSnapshot, aliasMismatch: aliasMismatch });
     if (ticket.querySelector('[data-ibkr-enhancer="ticketfill"]')) return;
     var wrap = el('div', ''); wrap.setAttribute('data-ibkr-enhancer', 'ticketfill');
     wrap.style.padding = '8px 12px';
+    if (plan.blocked) {
+      var reasons = { NO_MATCH: 'No exact short position match for this instrument.', STALE_SNAPSHOT: 'Positions snapshot is older than 24 hours; visit Positions to refresh it.', ALIAS_MISMATCH: 'Snapshot account does not match the account in view.', BAD_TARGET: 'Computed 60% target is not a valid limit for this position.' };
+      wrap.appendChild(el('div', '', 'Fill GTC unavailable: ' + (reasons[plan.blocked] || plan.blocked)));
+      var submitBtn0 = ticket.querySelector('#cp-submit-order-Buy-btn');
+      var previewBtn0 = Array.prototype.filter.call(ticket.querySelectorAll('button'), function (b) { return /preview/i.test(b.textContent || ''); })[0];
+      var anchor0 = (submitBtn0 && ticket.contains(submitBtn0)) ? submitBtn0 : previewBtn0;
+      var footer0 = anchor0 ? anchor0.parentElement : null;
+      if (footer0 && footer0.parentElement) footer0.parentElement.insertBefore(wrap, footer0); else ticket.appendChild(wrap);
+      return;
+    }
     var btn = el('button', 'ibx-pill', 'Fill GTC 60% close');
     btn.style.display = 'block'; btn.style.width = '100%'; btn.style.padding = '8px';
     var caption = el('div', '', 'Fills quantity, limit and TIF only. Review and submit yourself.');
     caption.style.opacity = '.65'; caption.style.fontSize = '11px'; caption.style.marginTop = '4px';
     btn.addEventListener('click', function () {
-      var qtyInput = findLabelledInput(ticket, 'Quantity');
-      var limitInput = findLabelledInput(ticket, 'Limit Price');
-      var tifSelect = ticket.querySelector('select');
-      var tifCombo = ticket.querySelector('[role="combobox"],[aria-haspopup="listbox"]');
-      var target = gtcTargetLimit(pos.avgPrice);
-      if (!qtyInput || !limitInput || target === null || (!tifSelect && !tifCombo)) { log('ticket fill aborted: controls or target missing'); return; }
-      setNativeValue(qtyInput, Math.abs(pos.qty));
-      setNativeValue(limitInput, target.toFixed(2));
-      if (tifSelect) {
-        var opt = Array.prototype.filter.call(tifSelect.options || [], function (o) { return (o.textContent || '').trim().toUpperCase() === 'GTC'; })[0];
-        if (opt) { tifSelect.value = opt.value; tifSelect.dispatchEvent(new window.Event('change', { bubbles: true })); }
-        return;
+      if (wrap.querySelector('[data-ibkr-enhancer="ticket-summary"]')) return;
+      var summary = el('div', ''); summary.setAttribute('data-ibkr-enhancer', 'ticket-summary');
+      summary.style.marginTop = '8px';
+      var lines = [
+        'You are about to fill a BUY to close order.',
+        'Quantity: ' + plan.qty,
+        'Instrument: ' + key.instrument,
+        'Limit: ' + plan.limit.toFixed(2) + ' (60% capture target)',
+        'Average premium received: ' + (plan.avgPrice !== null && plan.avgPrice !== undefined ? plan.avgPrice : 'n/a'),
+        'Capture at this limit: ' + plan.capturePct.toFixed(1) + '%',
+        'Time-In-Force: GTC'
+      ];
+      lines.forEach(function (ln) { summary.appendChild(el('div', '', ln)); });
+      if (plan.last !== null && plan.last !== undefined) {
+        if (plan.limit >= plan.last) summary.appendChild(el('div', '', 'Warning: target is at or above the current price; this fills immediately and will not rest as a GTC.'));
+        if (plan.last < plan.limit) summary.appendChild(el('div', '', 'Warning: the current price is already beyond the target.'));
       }
-      if (tifCombo && !/\bGTC\b/.test(tifCombo.textContent || '')) {
-        tifCombo.click();
+      var fillBtn = el('button', 'ibx-pill ibx-on', 'Fill');
+      var cancelBtn = el('button', '', 'Cancel');
+      fillBtn.addEventListener('click', function () {
+        var qtyInput = findLabelledInput(ticket, 'Quantity');
+        var limitInput = findLabelledInput(ticket, 'Limit Price');
+        var tifSelect = ticket.querySelector('select');
+        var tifCombo = ticket.querySelector('[role="combobox"],[aria-haspopup="listbox"]');
+        if (!qtyInput || !limitInput || (!tifSelect && !tifCombo)) { log('ticket fill aborted: controls missing'); return; }
+        var pre = { qty: qtyInput.value, limit: limitInput.value, tif: tifCombo ? (tifCombo.textContent || '').trim() : (tifSelect ? tifSelect.value : '') };
+        setNativeValue(qtyInput, plan.qty);
+        setNativeValue(limitInput, plan.limit.toFixed(2));
+        if (tifSelect) {
+          var opt = Array.prototype.filter.call(tifSelect.options || [], function (o) { return (o.textContent || '').trim().toUpperCase() === 'GTC'; })[0];
+          if (opt) { tifSelect.value = opt.value; tifSelect.dispatchEvent(new window.Event('change', { bubbles: true })); }
+        } else if (tifCombo && !/\bGTC\b/.test(tifCombo.textContent || '')) {
+          tifCombo.click();
+          setTimeout(function () {
+            Array.prototype.forEach.call(document.querySelectorAll('[role="option"]'), function (o) { if ((o.textContent || '').trim().toUpperCase() === 'GTC') o.click(); });
+          }, 60);
+        }
         setTimeout(function () {
-          var opts = document.querySelectorAll('[role="option"]');
-          Array.prototype.forEach.call(opts, function (o) { if ((o.textContent || '').trim().toUpperCase() === 'GTC') o.click(); });
-        }, 60);
-      }
+          var gotQty = qtyInput.value, gotLimit = limitInput.value;
+          var gotTif = tifCombo ? (tifCombo.textContent || '').trim() : (tifSelect ? tifSelect.options[tifSelect.selectedIndex].textContent.trim() : '');
+          var problems = [];
+          if (String(gotQty) !== String(plan.qty)) problems.push('quantity reads ' + gotQty);
+          if (parseNumber(gotLimit) !== plan.limit) problems.push('limit reads ' + gotLimit);
+          if (!/\bGTC\b/.test(gotTif || '')) problems.push('TIF reads ' + (gotTif || 'empty'));
+          var receipt = el('div', '', problems.length ? ('Receipt warning: ' + problems.join('; ') + '. Review before submitting.') :
+            ('Filled: quantity ' + gotQty + ', limit ' + gotLimit + ', TIF GTC. Review and submit yourself.'));
+          receipt.style.marginTop = '6px';
+          var undoBtn = el('button', '', 'Undo');
+          undoBtn.addEventListener('click', function () {
+            setNativeValue(qtyInput, pre.qty);
+            setNativeValue(limitInput, pre.limit);
+            if (tifCombo && pre.tif && !new RegExp('\\b' + pre.tif.toUpperCase() + '\\b').test((tifCombo.textContent || '').toUpperCase())) {
+              tifCombo.click();
+              setTimeout(function () {
+                Array.prototype.forEach.call(document.querySelectorAll('[role="option"]'), function (o) { if ((o.textContent || '').trim() === pre.tif) o.click(); });
+              }, 60);
+            } else if (tifSelect && pre.tif) { tifSelect.value = pre.tif; tifSelect.dispatchEvent(new window.Event('change', { bubbles: true })); }
+            receipt.textContent = 'Undone: pre-fill values restored.';
+          });
+          summary.appendChild(receipt); summary.appendChild(undoBtn);
+        }, 200);
+      });
+      cancelBtn.addEventListener('click', function () { summary.remove(); });
+      summary.appendChild(fillBtn); summary.appendChild(cancelBtn);
+      wrap.appendChild(summary);
     });
     wrap.appendChild(btn); wrap.appendChild(caption);
     var submitBtn = ticket.querySelector('#cp-submit-order-Buy-btn') || document.querySelector('#cp-submit-order-Buy-btn');

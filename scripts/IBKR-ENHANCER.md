@@ -158,16 +158,22 @@ toggle: "Covered-call chips".
 When the order ticket (`.order-ticket__sidebar`) is open with the Close
 tab selected for a known short option, one button appears above the ticket
 footer: "Fill GTC 60% close", captioned "Fills quantity, limit and TIF
-only. Review and submit yourself." On click it sets Quantity to the full
-short quantity, Limit Price to floor-to-cent(0.40 x avg premium received),
-and Time-In-Force to GTC by driving the custom listbox (combobox open,
-then the GTC option; a native `<select>` is set directly). Values are set
-via the native setter plus input/change events. It NEVER clicks Preview,
-the submit button (`#cp-submit-order-Buy-btn`), or any other order
-control, and touches no other field. Position data comes from the live
-positions table when present, else the positions snapshot saved by
-Positions-page runs to GM storage. No known short position, no button.
-Settings toggle: "Order ticket GTC fill".
+only. Review and submit yourself." Clicking it first opens a confirmation
+summary in the ticket, spelled in words: BUY to close, quantity,
+instrument, limit = floor-to-cent(0.40 x avg premium received), the avg
+premium, capture %, and TIF GTC, with warnings when the target is at or
+above the current price. Fields are written only on the summary's Fill
+click: quantity and price inputs via the native setter plus input/change
+events, TIF via the custom listbox (combobox open, then the GTC option; a
+native `<select>` is set directly). It NEVER clicks Preview, the submit
+button (`#cp-submit-order-Buy-btn`), or any other order control. After
+filling it re-reads the three fields, renders a receipt line (warning on
+any mismatch), and offers Undo restoring the pre-fill values. Hard blocks
+render reason text instead of the button: no exact position match,
+positions snapshot older than 24h, account alias mismatch (the snapshot
+records the alias and timestamp), or a target >= avg premium or <= 0.
+Position data comes from the live positions table when present, else the
+GM positions snapshot. Settings toggle: "Order ticket GTC fill".
 
 ## Phase 2 candidates (not built)
 

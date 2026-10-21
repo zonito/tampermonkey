@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-21 (v0.7.0)
+
+- IBKR Enhancer ticket fill protection: confirmation summary in words
+  before any write, hard blocks (no match, stale snapshot, alias mismatch,
+  bad target) as reason text, post-fill receipt re-read with mismatch
+  warning, and Undo restoring pre-fill values. Positions snapshot now
+  records account alias, timestamp and Last.
+
 ## 2026-10-21 (v0.6.0)
 
 - IBKR Enhancer order-ticket GTC fill: button on the Close tab for known

@@ -14,7 +14,7 @@ assert.ok(start >= 0 && end > start, 'parser markers present');
 const parserSrc = src.slice(start, end);
 const mod = { exports: {} };
 // The parser block references `module` only via the guard below it; evaluate block + export line.
-new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, parseInstrumentSearch, buildPositionsSnapshot, findShortPosition, positionsToCsv, ordersToCsv };')(mod, mod.exports);
+new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, parseInstrumentSearch, buildPositionsSnapshot, findShortPosition, ticketFillPlan, positionsToCsv, ordersToCsv };')(mod, mod.exports);
 const P = mod.exports;
 
 const H = ['Instrument', 'Position', 'Change %', 'Cost Basis', 'Market Value', 'Last', 'Avg Price', 'Daily P&L', 'Unrealized P&L', 'Delta', '52wk IV Rank', '52wk IV Pctl', 'P/E', 'Forward P/E', 'Beta', 'Market Cap', 'Social Sentiment Score', 'Social Sentiment Score Change'];
@@ -224,6 +224,19 @@ test('ticket fill target math + short position lookup', () => {
   const found = P.findShortPosition(positions, key);
   assert.equal(found.qty, -3); assert.equal(Math.abs(found.qty), 3);
   assert.equal(P.findShortPosition(positions, { ...key, strike: 80 }), null);
+});
+
+test('ticket fill plan blocks: stale, alias mismatch, bad target, no match', () => {
+  const pos = { underlying: 'AXTI', expiryISO: '2026-11-20', strike: 75, type: 'call', qty: -3, avgPrice: 2.0, last: 1.0 };
+  const ok = P.ticketFillPlan(pos, {});
+  assert.equal(ok.blocked, null); assert.equal(ok.qty, 3); assert.equal(ok.limit, 0.8);
+  assert.ok(Math.abs(ok.capturePct - 60) < 1e-9);
+  assert.equal(P.ticketFillPlan(null, {}).blocked, 'NO_MATCH');
+  assert.equal(P.ticketFillPlan(pos, { staleSnapshot: true }).blocked, 'STALE_SNAPSHOT');
+  assert.equal(P.ticketFillPlan(pos, { aliasMismatch: true }).blocked, 'ALIAS_MISMATCH');
+  assert.equal(P.ticketFillPlan({ ...pos, avgPrice: 0.01 }, {}).blocked, 'BAD_TARGET');
+  assert.equal(P.ticketFillPlan({ ...pos, avgPrice: 0 }, {}).blocked, 'BAD_TARGET');
+  assert.equal(P.ticketFillPlan({ ...pos, avgPrice: null }, {}).blocked, 'BAD_TARGET');
 });
 
 test('duplicate strike detection + CSV shape', () => {
