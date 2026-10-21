@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-21 (v0.6.0)
+
+- IBKR Enhancer order-ticket GTC fill: button on the Close tab for known
+  short options fills quantity, 60% limit and GTC TIF only (native setter
+  + events, listbox driven); never clicks Preview or Submit. Positions
+  snapshot saved from Positions runs as fallback. Toggle in settings.
+
 ## 2026-10-21 (v0.5.2)
 
 - IBKR Enhancer margin bar: × is now a collapse control folding the bar to

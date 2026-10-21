@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.5.2
+// @version      0.6.0
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -315,6 +315,33 @@
     return { capacity: capacity, covered: shortContracts, posCovered: shortContracts, shortContracts: shortContracts,
       orderRemain: orderRemain, covering: covering, orderCovering: orderCovering, state: state };
   }
+  function parseInstrumentSearch(text) {
+    var t = String(text || '').replace(/\s+/g, ' ');
+    var m = t.match(/(\S+)\s+([A-Z][a-z]{2})(\d{2})'(\d{2})\s+([\d,]+(?:\.\d+)?)\s+(Put|Call)\b/i);
+    if (!m) return null;
+    var mon = MONTHS[m[2].charAt(0).toUpperCase() + m[2].slice(1).toLowerCase()];
+    if (mon === undefined) return null;
+    var expiry = new Date(Date.UTC(2000 + Number(m[4]), mon, Number(m[3])));
+    return { instrument: (m[1] + ' ' + m[2] + m[3] + "'" + m[4] + ' ' + m[5] + ' ' + m[6]),
+      underlying: m[1], type: m[6].toLowerCase(), expiry: expiry,
+      expiryISO: expiry.toISOString().slice(0, 10), strike: parseNumber(m[5]) };
+  }
+  function buildPositionsSnapshot(positions, savedAt) {
+    return { savedAt: savedAt || null, positions: (positions || []).map(function (r) {
+      return { underlying: r.underlying, expiryISO: r.expiryISO || null, strike: r.strike, type: r.type,
+        qty: r.qty, avgPrice: r.avgPrice };
+    }) };
+  }
+  function findShortPosition(positions, key) {
+    if (!key) return null;
+    var found = null;
+    (positions || []).forEach(function (r) {
+      if (found || !r) return;
+      if (r.underlying === key.underlying && r.expiryISO === key.expiryISO && r.strike === key.strike &&
+          r.type === key.type && r.qty !== null && r.qty !== undefined && r.qty < 0) found = r;
+    });
+    return found;
+  }
   function defaultFilterState(kind) {
     return kind === 'positions'
       ? { text: '', typeSeg: 'all', expirySeg: 'any', itmOnly: false }
@@ -398,12 +425,13 @@
     isTerminalStatus: isTerminalStatus, isOpenOrder: isOpenOrder, summarizeOrders: summarizeOrders,
     defaultFilterState: defaultFilterState, filterIsActive: filterIsActive, matchesRowFilters: matchesRowFilters,
     buildOrdersSnapshot: buildOrdersSnapshot, gtcTargetLimit: gtcTargetLimit, gtcChipState: gtcChipState, wingPairState: wingPairState, ccCoverageState: ccCoverageState,
+    parseInstrumentSearch: parseInstrumentSearch, buildPositionsSnapshot: buildPositionsSnapshot, findShortPosition: findShortPosition,
     positionsToCsv: positionsToCsv, ordersToCsv: ordersToCsv };
   if (typeof module !== 'undefined' && module.exports) module.exports = PARSER;
 
   // ---------- settings ----------
   var DEFAULTS = { marginBar: true, badges: true, grouping: false, filters: true, orderAges: true,
-    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, density: 'comfortable', dismissedBar: false, barCollapsed: false };
+    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, ticketFill: true, density: 'comfortable', dismissedBar: false, barCollapsed: false };
   function getSetting(key) {
     try { if (typeof GM_getValue === 'function') { var v = GM_getValue('ibx.' + key, undefined); if (v !== undefined) return v; } } catch (e) { /* silent */ }
     try { var raw = window.localStorage.getItem('ibx.' + key); return raw === null ? DEFAULTS[key] : JSON.parse(raw); } catch (e) { return DEFAULTS[key]; }
@@ -414,7 +442,7 @@
   }
   function allOff() {
     return !getSetting('marginBar') && !getSetting('badges') && !getSetting('grouping') &&
-      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips') && !getSetting('wingChips') && !getSetting('ccChips');
+      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips') && !getSetting('wingChips') && !getSetting('ccChips') && !getSetting('ticketFill');
   }
 
   var CSS = [
@@ -740,7 +768,7 @@
     var title = el('div', '', 'IBKR Enhancer settings'); title.style.fontWeight = '700'; panel.appendChild(title);
     [['marginBar', 'Margin bar'], ['badges', 'Positions badges'], ['grouping', 'Group by underlying'],
      ['filters', 'Filter bars'], ['orderAges', 'Order age / notional'], ['copyButtons', 'Copy CSV buttons'],
-     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips'], ['wingChips', 'Wing pairing chips'], ['ccChips', 'Covered-call chips']].forEach(function (pairDef) {
+     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips'], ['wingChips', 'Wing pairing chips'], ['ccChips', 'Covered-call chips'], ['ticketFill', 'Order ticket GTC fill']].forEach(function (pairDef) {
       var row = el('label'); row.style.display = 'block';
       var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!getSetting(pairDef[0]);
       cb.setAttribute('data-ibkr-enhancer', '1');
@@ -782,6 +810,7 @@
   function enhancePositions(found) {
     var rows = readPositions(found);
     liveRows.positions = rows;
+    try { setSetting('positionsSnapshot', buildPositionsSnapshot(rows, new Date().toISOString())); } catch (e) { /* silent */ }
     var visible = dataRows(found).length;
     log('positions parsed ' + rows.length + ' / visible ' + visible);
     var equityLast = {};
@@ -1051,6 +1080,85 @@
     return rows;
   }
 
+  function setNativeValue(input, value) {
+    try {
+      var proto = window.HTMLInputElement && window.HTMLInputElement.prototype;
+      var desc = proto && Object.getOwnPropertyDescriptor(proto, 'value');
+      if (desc && desc.set) desc.set.call(input, String(value)); else input.value = String(value);
+    } catch (e) { input.value = String(value); }
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    input.dispatchEvent(new window.Event('change', { bubbles: true }));
+  }
+  function findLabelledInput(root, label) {
+    var nodes = root.querySelectorAll('label,span,div,p');
+    for (var i = 0; i < nodes.length; i++) {
+      if ((nodes[i].textContent || '').trim() !== label) continue;
+      var scope = nodes[i];
+      for (var d = 0; scope && d < 5; d++) {
+        var inp = scope.querySelector ? scope.querySelector('input') : null;
+        if (inp) return inp;
+        scope = scope.parentElement;
+        if (scope && !root.contains(scope)) break;
+      }
+    }
+    return null;
+  }
+  function enhanceTicket() {
+    var ticket = document.querySelector('.order-ticket__sidebar');
+    if (!ticket || !getSetting('ticketFill')) { removeInjected('[data-ibkr-enhancer="ticketfill"]'); return; }
+    var tabs = ticket.querySelectorAll('[role="tab"],button,div,span');
+    var closeSelected = false;
+    Array.prototype.forEach.call(tabs, function (t) {
+      if ((t.textContent || '').trim() !== 'Close') return;
+      if (t.getAttribute && (t.getAttribute('aria-selected') === 'true' || /active|selected|checked/i.test(t.className || ''))) closeSelected = true;
+    });
+    if (!closeSelected) { removeInjected('[data-ibkr-enhancer="ticketfill"]'); return; }
+    var key = parseInstrumentSearch(spacedText(ticket));
+    if (!key) { removeInjected('[data-ibkr-enhancer="ticketfill"]'); return; }
+    var source = (liveRows.positions && liveRows.positions.length) ? liveRows.positions : null;
+    if (!source) {
+      try { var snap = getSetting('positionsSnapshot'); source = snap && snap.positions ? snap.positions : null; } catch (e) { source = null; }
+    }
+    var pos = findShortPosition(source, key);
+    if (!pos) { removeInjected('[data-ibkr-enhancer="ticketfill"]'); return; }
+    if (ticket.querySelector('[data-ibkr-enhancer="ticketfill"]')) return;
+    var wrap = el('div', ''); wrap.setAttribute('data-ibkr-enhancer', 'ticketfill');
+    wrap.style.padding = '8px 12px';
+    var btn = el('button', 'ibx-pill', 'Fill GTC 60% close');
+    btn.style.display = 'block'; btn.style.width = '100%'; btn.style.padding = '8px';
+    var caption = el('div', '', 'Fills quantity, limit and TIF only. Review and submit yourself.');
+    caption.style.opacity = '.65'; caption.style.fontSize = '11px'; caption.style.marginTop = '4px';
+    btn.addEventListener('click', function () {
+      var qtyInput = findLabelledInput(ticket, 'Quantity');
+      var limitInput = findLabelledInput(ticket, 'Limit Price');
+      var tifSelect = ticket.querySelector('select');
+      var tifCombo = ticket.querySelector('[role="combobox"],[aria-haspopup="listbox"]');
+      var target = gtcTargetLimit(pos.avgPrice);
+      if (!qtyInput || !limitInput || target === null || (!tifSelect && !tifCombo)) { log('ticket fill aborted: controls or target missing'); return; }
+      setNativeValue(qtyInput, Math.abs(pos.qty));
+      setNativeValue(limitInput, target.toFixed(2));
+      if (tifSelect) {
+        var opt = Array.prototype.filter.call(tifSelect.options || [], function (o) { return (o.textContent || '').trim().toUpperCase() === 'GTC'; })[0];
+        if (opt) { tifSelect.value = opt.value; tifSelect.dispatchEvent(new window.Event('change', { bubbles: true })); }
+        return;
+      }
+      if (tifCombo && !/\bGTC\b/.test(tifCombo.textContent || '')) {
+        tifCombo.click();
+        setTimeout(function () {
+          var opts = document.querySelectorAll('[role="option"]');
+          Array.prototype.forEach.call(opts, function (o) { if ((o.textContent || '').trim().toUpperCase() === 'GTC') o.click(); });
+        }, 60);
+      }
+    });
+    wrap.appendChild(btn); wrap.appendChild(caption);
+    var submitBtn = ticket.querySelector('#cp-submit-order-Buy-btn') || document.querySelector('#cp-submit-order-Buy-btn');
+    var previewBtn = Array.prototype.filter.call(ticket.querySelectorAll('button'), function (b) { return /preview/i.test(b.textContent || ''); })[0];
+    var anchorBtn = (submitBtn && ticket.contains(submitBtn)) ? submitBtn : previewBtn;
+    var footer = anchorBtn ? anchorBtn.parentElement : null;
+    if (footer && footer.parentElement) footer.parentElement.insertBefore(wrap, footer);
+    else ticket.appendChild(wrap);
+  }
+
   function cleanupNative() {
     removeInjected('[data-ibkr-enhancer]');
     Array.prototype.forEach.call(document.querySelectorAll('table.ibx-sticky, table.ibx-zebra, table.ibx-compact'), function (t) {
@@ -1077,6 +1185,7 @@
       if (found.orders) enhanceOrders(found.orders);
       if (found.positions) applyFilterToRows('positions');
       if (found.orders) applyFilterToRows('orders');
+      enhanceTicket();
       if (!found.positions) removeInjected('[data-ibkr-enhancer="panel"]');
     } catch (e) { log('run failed (silent in UI)', e && e.message); }
     finally { running = false; if (queued) { queued = false; scheduleRun(); } }

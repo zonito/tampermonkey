@@ -153,6 +153,22 @@ and limit. No position and no order: muted "No CC · up to N". Equities
 under 100 shares get no chip. Pure function `ccCoverageState`. Settings
 toggle: "Covered-call chips".
 
+## Order-ticket GTC fill (v0.6.0)
+
+When the order ticket (`.order-ticket__sidebar`) is open with the Close
+tab selected for a known short option, one button appears above the ticket
+footer: "Fill GTC 60% close", captioned "Fills quantity, limit and TIF
+only. Review and submit yourself." On click it sets Quantity to the full
+short quantity, Limit Price to floor-to-cent(0.40 x avg premium received),
+and Time-In-Force to GTC by driving the custom listbox (combobox open,
+then the GTC option; a native `<select>` is set directly). Values are set
+via the native setter plus input/change events. It NEVER clicks Preview,
+the submit button (`#cp-submit-order-Buy-btn`), or any other order
+control, and touches no other field. Position data comes from the live
+positions table when present, else the positions snapshot saved by
+Positions-page runs to GM storage. No known short position, no button.
+Settings toggle: "Order ticket GTC fill".
+
 ## Phase 2 candidates (not built)
 
 DTE/expiry-week digest, per-underlying P&L history from repeated CSV

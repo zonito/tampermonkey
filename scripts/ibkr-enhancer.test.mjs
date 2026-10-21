@@ -14,7 +14,7 @@ assert.ok(start >= 0 && end > start, 'parser markers present');
 const parserSrc = src.slice(start, end);
 const mod = { exports: {} };
 // The parser block references `module` only via the guard below it; evaluate block + export line.
-new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, positionsToCsv, ordersToCsv };')(mod, mod.exports);
+new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, parseInstrumentSearch, buildPositionsSnapshot, findShortPosition, positionsToCsv, ordersToCsv };')(mod, mod.exports);
 const P = mod.exports;
 
 const H = ['Instrument', 'Position', 'Change %', 'Cost Basis', 'Market Value', 'Last', 'Avg Price', 'Daily P&L', 'Unrealized P&L', 'Delta', '52wk IV Rank', '52wk IV Pctl', 'P/E', 'Forward P/E', 'Beta', 'Market Cap', 'Social Sentiment Score', 'Social Sentiment Score Change'];
@@ -209,6 +209,21 @@ test('covered-call coverage: position-only green, order-only amber, mixed, neith
   assert.equal(s.state, 'none'); assert.equal(s.posCovered, 0); assert.equal(s.orderRemain, 0);
   s = P.ccCoverageState({ underlying: 'AXTI', type: 'equity', qty: 99 }, [eq], snap(10));
   assert.equal(s.capacity, 0);
+});
+
+test('ticket fill target math + short position lookup', () => {
+  assert.equal(P.gtcTargetLimit(2.0), 0.8);
+  assert.equal(P.gtcTargetLimit(1.234), 0.49); // floor to cent of 0.4936
+  assert.equal(P.gtcTargetLimit(0), null);
+  const key = P.parseInstrumentSearch("Close AXTI Nov20'26 75 Call quantity");
+  assert.equal(key.underlying, 'AXTI'); assert.equal(key.strike, 75); assert.equal(key.type, 'call');
+  const positions = P.buildPositionsSnapshot([
+    { underlying: 'AXTI', expiryISO: '2026-11-20', strike: 75, type: 'call', qty: -3, avgPrice: 2.0 },
+    { underlying: 'AXTI', expiryISO: '2026-11-20', strike: 75, type: 'put', qty: -3, avgPrice: 2.0 },
+  ], '2026-11-13T00:00:00Z').positions;
+  const found = P.findShortPosition(positions, key);
+  assert.equal(found.qty, -3); assert.equal(Math.abs(found.qty), 3);
+  assert.equal(P.findShortPosition(positions, { ...key, strike: 80 }), null);
 });
 
 test('duplicate strike detection + CSV shape', () => {
