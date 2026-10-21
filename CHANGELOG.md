@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-21 (v0.9.0)
+
+- IBKR Enhancer account-values sync (default off, independent of the
+  orders export): streams the margin bar's own read to Kubera's
+  broker-accounts feed about once a minute (first read and account
+  change immediately, 5-minute heartbeat when unchanged), dashes as
+  nulls, fallback reads as `complete: false`. Silent by design — no
+  toast, no page line; one quiet status line in the gear panel.
+
 ## 2026-10-21 (v0.8.3)
 
 - IBKR Enhancer: version bump so Tampermonkey delivers the bottom-left

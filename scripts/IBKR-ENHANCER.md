@@ -11,6 +11,25 @@ a native action button.** Copy buttons write CSV to the clipboard only.
 The only network call anywhere is the opt-in export of parsed open orders
 to the user's own local Kubera at `http://127.0.0.1:8000`; see below.
 
+## Account-values sync (v0.9.0, any page with a margin-bar read, default off)
+
+Settings toggle "Sync account values to Kubera", independent of the
+orders-export toggle, sharing the same ingest-token field. The sender
+reuses the margin bar's own parsed read (no new scraping): alias,
+account id, headline NLV and the labelled fields, with a dash sent as
+`null`, never zero-filled. It POSTs to Kubera's
+`/api/v1/broker-accounts/snapshot` via `GM_xmlhttpRequest` only, at
+most once per 60 seconds per account — immediately on the first read
+after page load and on account change, and at least every 5 minutes
+as a heartbeat when values are unchanged. `complete` is true only
+when the headline resolved; the labelled-fields-only fallback sends
+`complete: false`. Feedback is silent by design (no toast, no page
+line); the gear panel shows one quiet `Account sync: last HH:MM:SS`
+or `Account sync: failed (reason)` line. Failures drop the send; the
+next throttled read supersedes it. Kubera derives cushion server-side
+and answers stale/duplicate captures with `accepted: false`, which
+counts as success here.
+
 ## Kubera export (v0.8.0, Orders page only, default off; toolbar/toast polish v0.8.1)
 
 Settings toggle "Export orders to Kubera" plus a "Kubera ingest token"

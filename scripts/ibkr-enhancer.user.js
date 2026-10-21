@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.8.3
+// @version      0.9.0
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders. Optional: exports open orders to local Kubera only.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -506,6 +506,49 @@
       };
     });
   }
+
+  // ---- Kubera account-values sync (pure builder + throttle) ----
+  function buildAccountSnapshot(ctx, capturedAt) {
+    if (!ctx) return null;
+    var fields = ctx.fields || {};
+    function value(v) { return v === undefined || v === null ? null : v; }
+    var values = {
+      net_liquidation: value(ctx.headline),
+      excess_liquidity: value(fields['Excess Liquidity']),
+      buying_power: value(fields['Buying Power']),
+      maintenance_margin: value(fields['Maintenance Margin']),
+      unrealized_pnl: value(fields['Unrealized P&L']),
+      realized_pnl: value(fields['Realized P&L']),
+      settled_cash: value(fields['Settled Cash'])
+    };
+    return {
+      ingest_source: 'tampermonkey-ibkr',
+      account_id: ctx.accountId || null,
+      account_label: ctx.alias || null,
+      captured_at: capturedAt || null,
+      complete: values.net_liquidation !== null,
+      currency: ctx.currency || 'USD',
+      values: values
+    };
+  }
+  function accountSyncFingerprint(snapshot) {
+    if (!snapshot) return '';
+    var v = snapshot.values || {};
+    return [snapshot.account_id || '', snapshot.complete ? '1' : '0',
+      v.net_liquidation, v.excess_liquidity, v.buying_power, v.maintenance_margin,
+      v.unrealized_pnl, v.realized_pnl, v.settled_cash].join('|');
+  }
+  function accountSyncDecision(state, snapshot, nowMs) {
+    if (!snapshot || !snapshot.account_id) return { send: false, reason: 'no_account' };
+    var now = typeof nowMs === 'number' ? nowMs : Date.now();
+    var s = state || {};
+    if (!s.lastSentAt) return { send: true, reason: 'first' };
+    if (snapshot.account_id !== s.lastSentAccount) return { send: true, reason: 'account_change' };
+    if (s.lastAttemptAt && now - s.lastAttemptAt < 60000) return { send: false, reason: 'throttled' };
+    if (accountSyncFingerprint(snapshot) !== s.lastSentFingerprint) return { send: true, reason: 'changed' };
+    if (now - s.lastSentAt >= 300000) return { send: true, reason: 'heartbeat' };
+    return { send: false, reason: 'unchanged' };
+  }
   // ================= PARSER END =================
 
   var PARSER = { parseNumber: parseNumber, parseInstrument: parseInstrument, normalizeHeader: normalizeHeader,
@@ -520,12 +563,14 @@
     positionsToCsv: positionsToCsv, ordersToCsv: ordersToCsv,
     formatLondonCapturedAt: formatLondonCapturedAt, currencyFromText: currencyFromText,
     brokerOrderFromParsed: brokerOrderFromParsed, exportedOrdersComplete: exportedOrdersComplete,
-    buildBrokerSnapshots: buildBrokerSnapshots };
+    buildBrokerSnapshots: buildBrokerSnapshots,
+    buildAccountSnapshot: buildAccountSnapshot, accountSyncFingerprint: accountSyncFingerprint,
+    accountSyncDecision: accountSyncDecision };
   if (typeof module !== 'undefined' && module.exports) module.exports = PARSER;
 
   // ---------- settings ----------
   var DEFAULTS = { marginBar: true, badges: true, grouping: false, filters: true, orderAges: true,
-    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, ticketFill: true, exportOrders: false, kuberaIngestToken: '', density: 'comfortable', dismissedBar: false, barCollapsed: false };
+    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, ticketFill: true, exportOrders: false, accountSync: false, kuberaIngestToken: '', density: 'comfortable', dismissedBar: false, barCollapsed: false };
   function getSetting(key) {
     try { if (typeof GM_getValue === 'function') { var v = GM_getValue('ibx.' + key, undefined); if (v !== undefined) return v; } } catch (e) { /* silent */ }
     try { var raw = window.localStorage.getItem('ibx.' + key); return raw === null ? DEFAULTS[key] : JSON.parse(raw); } catch (e) { return DEFAULTS[key]; }
@@ -536,7 +581,7 @@
   }
   function allOff() {
     return !getSetting('marginBar') && !getSetting('badges') && !getSetting('grouping') &&
-      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips') && !getSetting('wingChips') && !getSetting('ccChips') && !getSetting('ticketFill') && !getSetting('exportOrders');
+      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips') && !getSetting('wingChips') && !getSetting('ccChips') && !getSetting('ticketFill') && !getSetting('exportOrders') && !getSetting('accountSync');
   }
 
   var CSS = [
@@ -714,7 +759,7 @@
     // summary labels (up to 25 levels) still containing exactly one
     // account-ID token; 2+ IDs means the multi-account column, reject it.
     var cutLabels = labels.concat(['Settled Cash', 'Realized P&L']);
-    var alias = null, headline = null, maskedId = null;
+    var alias = null, headline = null, maskedId = null, accountId = null, currency = null;
     var item = null, node = firstLabelEl;
     dbg.reason = firstLabelEl ? 'NO_ITEM_1ID' : 'NO_LABELS';
     for (var depth = 0; node && depth < 25; depth++) {
@@ -737,9 +782,11 @@
       var idIdx = idTok ? header.lastIndexOf(idTok) : -1;
       dbg.headerLen = header.length;
       if (idTok && idIdx >= 0) {
+        accountId = idTok;
         maskedId = idTok.charAt(0) + '\u2022\u2022\u2022' + idTok.slice(-2);
         var afterId = header.slice(idIdx + idTok.length);
         var curM = afterId.match(/(USD|GBP|EUR)/);
+        currency = curM ? curM[1] : null;
         dbg.currency = !!curM;
         dbg.signed = /[+-][\d,]+(?:\.\d+)?/.test(afterId);
         dbg.reason = !curM ? 'NO_CURRENCY' : 'NO_MONEY';
@@ -772,7 +819,7 @@
       }
     }
     lastAnchorDebug = anchorDebugLine(dbg);
-    return { fields: fields, headline: headline, alias: alias, maskedId: maskedId, debug: dbg };
+    return { fields: fields, headline: headline, alias: alias, maskedId: maskedId, accountId: accountId, currency: currency, debug: dbg };
   }
 
   function fmtMoney(v) {
@@ -875,7 +922,7 @@
     var title = el('div', '', 'IBKR Enhancer settings'); title.style.fontWeight = '700'; panel.appendChild(title);
     [['marginBar', 'Margin bar'], ['badges', 'Positions badges'], ['grouping', 'Group by underlying'],
      ['filters', 'Filter bars'], ['orderAges', 'Order age / notional'], ['copyButtons', 'Copy CSV buttons'],
-     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips'], ['wingChips', 'Wing pairing chips'], ['ccChips', 'Covered-call chips'], ['ticketFill', 'Order ticket GTC fill'], ['exportOrders', 'Export orders to Kubera']].forEach(function (pairDef) {
+     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips'], ['wingChips', 'Wing pairing chips'], ['ccChips', 'Covered-call chips'], ['ticketFill', 'Order ticket GTC fill'], ['exportOrders', 'Export orders to Kubera'], ['accountSync', 'Sync account values to Kubera']].forEach(function (pairDef) {
       var row = el('label'); row.style.display = 'block';
       var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!getSetting(pairDef[0]);
       cb.setAttribute('data-ibkr-enhancer', '1');
@@ -894,6 +941,10 @@
     tokenInput.placeholder = 'Stored locally only';
     tokenInput.addEventListener('change', function () { setSetting('kuberaIngestToken', tokenInput.value.trim()); });
     trow.appendChild(tokenInput); panel.appendChild(trow);
+    var syncLine = el('div', '', accountSyncStatusText());
+    syncLine.setAttribute('data-ibkr-enhancer', 'sync-status');
+    syncLine.style.opacity = '.75';
+    panel.appendChild(syncLine);
     var dbgBtn = el('button', '', 'Copy anchor debug');
     dbgBtn.addEventListener('click', function () {
       try { findAccountContext(); } catch (e) { /* silent */ }
@@ -1288,6 +1339,62 @@
       } catch (e) { resolve({ ok: false, detail: String(e && e.message || e) }); }
     });
   }
+  // ---- Kubera account-values sync: silent, throttled, no toast ----
+  var KUBERA_ACCOUNT_URL = 'http://127.0.0.1:8000/api/v1/broker-accounts/snapshot';
+  var accountSyncState = { lastAttemptAt: 0, lastSentAt: 0, lastSentFingerprint: '', lastSentAccount: null };
+  var accountSyncStatus = 'Account sync: not sent yet';
+  function accountSyncStatusText() { return accountSyncStatus; }
+  function setAccountSyncStatus(text) {
+    accountSyncStatus = text;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-ibkr-enhancer="sync-status"]'), function (node) {
+      node.textContent = text;
+    });
+  }
+  function kuberaAccountPost(snapshot, token) {
+    return new Promise(function (resolve) {
+      if (typeof GM_xmlhttpRequest !== 'function') { resolve({ ok: false, detail: 'GM_xmlhttpRequest unavailable' }); return; }
+      try {
+        GM_xmlhttpRequest({
+          method: 'POST', url: KUBERA_ACCOUNT_URL,
+          headers: { 'Content-Type': 'application/json', 'X-Kubera-Ingest-Token': token },
+          data: JSON.stringify(snapshot), timeout: 8000,
+          onload: function (res) {
+            var ok = res.status >= 200 && res.status < 300;
+            resolve({ ok: ok, status: res.status, detail: ok ? '' : 'HTTP ' + res.status });
+          },
+          onerror: function () { resolve({ ok: false, detail: 'network error' }); },
+          ontimeout: function () { resolve({ ok: false, detail: 'timeout' }); }
+        });
+      } catch (e) { resolve({ ok: false, detail: String(e && e.message || e) }); }
+    });
+  }
+  function maybeSyncAccountValues(ctx) {
+    if (!getSetting('accountSync') || !ctx) return;
+    var hasAny = ctx.headline !== null && ctx.headline !== undefined ||
+      Object.keys(ctx.fields || {}).some(function (k) { return ctx.fields[k] !== null && ctx.fields[k] !== undefined; });
+    if (!hasAny) return;
+    var snapshot = buildAccountSnapshot(ctx, formatLondonCapturedAt(new Date()));
+    var decision = accountSyncDecision(accountSyncState, snapshot, Date.now());
+    if (!decision.send) return;
+    var now = Date.now();
+    accountSyncState.lastAttemptAt = now;
+    var token = String(getSetting('kuberaIngestToken') || '').trim();
+    if (!token) { setAccountSyncStatus('Account sync: failed (missing ingest token)'); return; }
+    kuberaAccountPost(snapshot, token).then(function (result) {
+      if (!result.ok) {
+        setAccountSyncStatus('Account sync: failed (' + shortExportReason(result) + ')');
+        return;
+      }
+      // accepted:false (stale_or_duplicate) still proves the feed is live.
+      accountSyncState.lastSentAt = now;
+      accountSyncState.lastSentFingerprint = accountSyncFingerprint(snapshot);
+      accountSyncState.lastSentAccount = snapshot.account_id;
+      setAccountSyncStatus('Account sync: last ' + String(snapshot.captured_at).slice(11, 19));
+    }).catch(function (err) {
+      setAccountSyncStatus('Account sync: failed (' + shortExportReason(err) + ')');
+    });
+  }
+
   function doExportOrders(force) {
     if (!getSetting('exportOrders') || exportState.inFlight) return;
     var rows = liveRows.orders || [];
@@ -1598,7 +1705,9 @@
       injectStyle();
       var found = findTables();
       if (found.positions && !getSetting('grouping')) restoreGrouping(found.positions);
-      renderMarginBar(findAccountContext());
+      var accountCtx = findAccountContext();
+      renderMarginBar(accountCtx);
+      maybeSyncAccountValues(accountCtx);
       if (found.positions) enhancePositions(found.positions);
       if (found.orders) enhanceOrders(found.orders);
       if (found.positions) applyFilterToRows('positions');

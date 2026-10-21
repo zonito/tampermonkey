@@ -14,7 +14,7 @@ assert.ok(start >= 0 && end > start, 'parser markers present');
 const parserSrc = src.slice(start, end);
 const mod = { exports: {} };
 // The parser block references `module` only via the guard below it; evaluate block + export line.
-new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, parseInstrumentSearch, buildPositionsSnapshot, findShortPosition, ticketFillPlan, positionsToCsv, ordersToCsv, formatLondonCapturedAt, currencyFromText, brokerOrderFromParsed, exportedOrdersComplete, buildBrokerSnapshots };')(mod, mod.exports);
+new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, parseInstrumentSearch, buildPositionsSnapshot, findShortPosition, ticketFillPlan, positionsToCsv, ordersToCsv, formatLondonCapturedAt, currencyFromText, brokerOrderFromParsed, exportedOrdersComplete, buildBrokerSnapshots, buildAccountSnapshot, accountSyncFingerprint, accountSyncDecision };')(mod, mod.exports);
 const P = mod.exports;
 
 const H = ['Instrument', 'Position', 'Change %', 'Cost Basis', 'Market Value', 'Last', 'Avg Price', 'Daily P&L', 'Unrealized P&L', 'Delta', '52wk IV Rank', '52wk IV Pctl', 'P/E', 'Forward P/E', 'Beta', 'Market Cap', 'Social Sentiment Score', 'Social Sentiment Score Change'];
@@ -266,6 +266,47 @@ test('London captured_at carries the Europe/London offset', () => {
   assert.ok(P.formatLondonCapturedAt(new Date('2026-01-15T12:00:00Z')).endsWith('+00:00'));
   assert.ok(P.formatLondonCapturedAt(new Date('2026-07-15T12:00:00Z')).endsWith('+01:00'));
   assert.ok(P.formatLondonCapturedAt(new Date('2026-07-15T12:00:00Z')).startsWith('2026-07-15T13:00:00'));
+});
+
+
+test('account snapshot builder: complete and fallback dash-to-null', () => {
+  const ctx = {
+    headline: 100000, alias: 'FakeOne', accountId: 'FAKE-A1', currency: 'USD',
+    fields: { 'Excess Liquidity': 25000, 'Buying Power': 50000, 'Maintenance Margin': 60000, 'Unrealized P&L': -1000, 'Realized P&L': 0, 'Settled Cash': 5000 },
+  };
+  const snap = P.buildAccountSnapshot(ctx, '2026-10-21T18:30:00+01:00');
+  assert.equal(snap.ingest_source, 'tampermonkey-ibkr');
+  assert.equal(snap.account_id, 'FAKE-A1'); assert.equal(snap.account_label, 'FakeOne');
+  assert.equal(snap.complete, true);
+  assert.equal(snap.values.net_liquidation, 100000);
+  assert.equal(snap.values.realized_pnl, 0); // a real zero stays zero
+  const fallback = P.buildAccountSnapshot(
+    { headline: null, alias: 'FakeOne', accountId: 'FAKE-A1', currency: null, fields: { 'Excess Liquidity': 25000, 'Buying Power': null } },
+    '2026-10-21T18:30:00+01:00',
+  );
+  assert.equal(fallback.complete, false);
+  assert.equal(fallback.values.net_liquidation, null); // dash -> null, never 0
+  assert.equal(fallback.values.buying_power, null);
+  assert.equal(fallback.values.settled_cash, null); // absent field -> null, not omitted
+  assert.equal(fallback.currency, 'USD');
+});
+
+test('account sync throttle: 60s gate, heartbeat, account change', () => {
+  const snap = (bp) => P.buildAccountSnapshot({
+    headline: 100000, alias: 'FakeOne', accountId: 'FAKE-A1', currency: 'USD',
+    fields: { 'Excess Liquidity': 25000, 'Buying Power': bp },
+  }, '2026-10-21T18:30:00+01:00');
+  const t0 = 1000000;
+  const state = { lastAttemptAt: 0, lastSentAt: 0, lastSentFingerprint: '', lastSentAccount: null };
+  assert.equal(P.accountSyncDecision(state, snap(50000), t0).reason, 'first');
+  state.lastAttemptAt = t0; state.lastSentAt = t0;
+  state.lastSentFingerprint = P.accountSyncFingerprint(snap(50000)); state.lastSentAccount = 'FAKE-A1';
+  assert.equal(P.accountSyncDecision(state, snap(51000), t0 + 30000).reason, 'throttled'); // no second send inside 60s
+  assert.equal(P.accountSyncDecision(state, snap(51000), t0 + 61000).reason, 'changed');
+  assert.equal(P.accountSyncDecision(state, snap(50000), t0 + 120000).reason, 'unchanged'); // inside heartbeat window
+  assert.equal(P.accountSyncDecision(state, snap(50000), t0 + 301000).reason, 'heartbeat'); // unchanged still pulses at 5 min
+  const other = { ...snap(50000), account_id: 'FAKE-B2' };
+  assert.equal(P.accountSyncDecision(state, other, t0 + 10000).reason, 'account_change'); // immediate on switch
 });
 
 test('duplicate strike detection + CSV shape', () => {
