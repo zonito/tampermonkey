@@ -108,8 +108,19 @@ parser lives between the `PARSER START/END` markers in the userscript.
 Toggle features off in the gear panel, or disable/remove the script in
 Tampermonkey. No page data is stored; only feature settings persist.
 
+## Phase 2A: Positions <-> Orders cross-reference (v0.2.0)
+
+On the Orders page the parsed open (non-terminal) orders are saved to GM
+storage with a timestamp. On the Positions page, every short option is
+matched against Buy closing orders on underlying + expiry + strike (+ type):
+green "GTC ✓ NN%" when the limit locks in >= 60% capture (limit <= 0.40 x
+avg premium, target rounded down to the cent), amber when a match locks in
+less, red "NO GTC" when none matches (escalated when premium already
+captured is >= 60%). Tooltips show the matched limit, remain, 60% target and
+snapshot time; chips grey out when the snapshot is older than 24 hours. New
+settings toggle: "GTC closing-order chips". No new grants.
+
 ## Phase 2 candidates (not built)
 
-Wing pairing, a 60% take-profit cross-check of buy-to-close orders against
-short positions, DTE/expiry-week digest, per-underlying P&L history from
+Wing pairing, DTE/expiry-week digest, per-underlying P&L history from
 repeated CSV copies.

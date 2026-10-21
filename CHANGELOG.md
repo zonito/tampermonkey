@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-21 (v0.2.0) — Phase 2A
+
+- IBKR Enhancer cross-reference: open orders snapshot saved from the Orders
+  page (GM storage, timestamped); short options on Positions get GTC chips
+  (green >= 60% locked capture, amber below, red NO GTC with escalation at
+  >= 60% captured, grey after 24h). Unit tests + synthetic jsdom gate for
+  all three states.
+
 ## 2026-10-21 (v0.1.6)
 
 - IBKR Enhancer cosmetics: filter search input styled to the pill system

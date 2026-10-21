@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.1.6
+// @version      0.2.0
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -214,6 +214,37 @@
     });
     return { openCount: openCount, totalNotional: totalNotional, staleCount: staleCount };
   }
+  function buildOrdersSnapshot(orders, savedAt) {
+    return { savedAt: savedAt || null, orders: (orders || []).filter(isOpenOrder).map(function (o) {
+      return { underlying: o.underlying, expiryISO: o.expiryISO || null, strike: o.strike, type: o.type,
+        action: o.action, limitPrice: o.limitPrice, remain: o.remain, status: o.status, orderId: o.orderId || null };
+    }) };
+  }
+  function gtcTargetLimit(avgPrice) {
+    if (avgPrice === null || avgPrice === undefined || !(avgPrice > 0)) return null;
+    return Math.floor(0.40 * avgPrice * 100) / 100;
+  }
+  function gtcChipState(row, snapshot, now) {
+    var orders = (snapshot && snapshot.orders) || [];
+    var savedAt = snapshot && snapshot.savedAt ? new Date(snapshot.savedAt).getTime() : null;
+    var stale = savedAt !== null && ((now ? new Date(now).getTime() : Date.now()) - savedAt > 24 * 3600 * 1000);
+    var matches = orders.filter(function (o) {
+      return o && o.action === 'Buy' && o.underlying === row.underlying && o.expiryISO === row.expiryISO &&
+        o.strike === row.strike && o.type === row.type;
+    });
+    matches.sort(function (a, b) {
+      var la = a.limitPrice === null || a.limitPrice === undefined ? Infinity : a.limitPrice;
+      var lb = b.limitPrice === null || b.limitPrice === undefined ? Infinity : b.limitPrice;
+      return la - lb;
+    });
+    var match = matches.length ? matches[0] : null;
+    var captured = premiumCaptured(row.last, row.avgPrice);
+    if (!match) return { state: 'red', pct: null, order: null, stale: stale, escalated: captured !== null && captured >= 0.6, snapshotAt: savedAt };
+    var pct = (row.avgPrice && match.limitPrice !== null && match.limitPrice !== undefined) ? (1 - (match.limitPrice / row.avgPrice)) : null;
+    var target = gtcTargetLimit(row.avgPrice);
+    var green = target !== null && match.limitPrice !== null && match.limitPrice !== undefined && match.limitPrice <= target;
+    return { state: green ? 'green' : 'amber', pct: pct, order: match, stale: stale, escalated: false, target: target, snapshotAt: savedAt };
+  }
   function defaultFilterState(kind) {
     return kind === 'positions'
       ? { text: '', typeSeg: 'all', expirySeg: 'any', itmOnly: false }
@@ -296,12 +327,13 @@
     remainingNotional: remainingNotional, duplicateOrderKeys: duplicateOrderKeys, orderKey: orderKey,
     isTerminalStatus: isTerminalStatus, isOpenOrder: isOpenOrder, summarizeOrders: summarizeOrders,
     defaultFilterState: defaultFilterState, filterIsActive: filterIsActive, matchesRowFilters: matchesRowFilters,
+    buildOrdersSnapshot: buildOrdersSnapshot, gtcTargetLimit: gtcTargetLimit, gtcChipState: gtcChipState,
     positionsToCsv: positionsToCsv, ordersToCsv: ordersToCsv };
   if (typeof module !== 'undefined' && module.exports) module.exports = PARSER;
 
   // ---------- settings ----------
   var DEFAULTS = { marginBar: true, badges: true, grouping: false, filters: true, orderAges: true,
-    copyButtons: true, readability: true, density: 'comfortable', dismissedBar: false };
+    copyButtons: true, readability: true, gtcChips: true, density: 'comfortable', dismissedBar: false };
   function getSetting(key) {
     try { if (typeof GM_getValue === 'function') { var v = GM_getValue('ibx.' + key, undefined); if (v !== undefined) return v; } } catch (e) { /* silent */ }
     try { var raw = window.localStorage.getItem('ibx.' + key); return raw === null ? DEFAULTS[key] : JSON.parse(raw); } catch (e) { return DEFAULTS[key]; }
@@ -312,7 +344,7 @@
   }
   function allOff() {
     return !getSetting('marginBar') && !getSetting('badges') && !getSetting('grouping') &&
-      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability');
+      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips');
   }
 
   var CSS = [
@@ -322,6 +354,8 @@
     '.ibx-cushion-green{color:#4caf50}.ibx-cushion-amber{color:#ffb300}.ibx-cushion-red{color:#ef5350}',
     '.ibx-badge{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font-size:10px;font-weight:700;vertical-align:middle}',
     '.ibx-badge-red{background:#5a1f1f;color:#ff8a80}.ibx-badge-amber{background:#554410;color:#ffd54f}.ibx-badge-green{background:#1e4620;color:#81c784}.ibx-badge-muted{background:#333;color:#bbb;font-weight:400}',
+    '.ibx-badge-escalated{background:#8e0000;color:#fff;box-shadow:0 0 0 1px #ff5252 inset}',
+    '.ibx-badge-stale{opacity:.45;filter:grayscale(1)}',
     '.ibx-filterbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 4px;font:12px -apple-system,Segoe UI,Roboto,sans-serif}',
     '.ibx-filterbar input[type=text]{min-width:180px;height:26px;padding:3px 12px;border-radius:999px;background:rgba(20,22,28,.92);color:#e8e8e8;border:1px solid rgba(128,128,128,.55)}',
     '.ibx-filterbar input[type=text]::placeholder{color:rgba(200,200,200,.55)}',
@@ -556,7 +590,7 @@
     var title = el('div', '', 'IBKR Enhancer settings'); title.style.fontWeight = '700'; panel.appendChild(title);
     [['marginBar', 'Margin bar'], ['badges', 'Positions badges'], ['grouping', 'Group by underlying'],
      ['filters', 'Filter bars'], ['orderAges', 'Order age / notional'], ['copyButtons', 'Copy CSV buttons'],
-     ['readability', 'Readability (zebra/header/density)']].forEach(function (pairDef) {
+     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips']].forEach(function (pairDef) {
       var row = el('label'); row.style.display = 'block';
       var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!getSetting(pairDef[0]);
       cb.setAttribute('data-ibkr-enhancer', '1');
@@ -617,6 +651,29 @@
         if (r.qty !== null && r.qty < 0) {
           var cap = premiumCaptured(r.last, r.avgPrice);
           if (cap !== null && cap >= 0.6) addBadge(cell, Math.round(cap * 100) + '% captured', 'ibx-badge-green', 'Premium captured = 1 - Last/Avg Price');
+        }
+      });
+    }
+    if (getSetting('gtcChips')) {
+      var snapshot = null;
+      try { snapshot = getSetting('ordersSnapshot') || null; } catch (e) { snapshot = null; }
+      rows.forEach(function (r) {
+        if (r.type === 'equity' || r.qty === null || r.qty >= 0) return;
+        var cell = instrumentCell(r._tr, found.headers);
+        var chip = gtcChipState(r, snapshot);
+        var snapTxt = chip.snapshotAt ? new Date(chip.snapshotAt).toISOString() : 'none saved (visit Orders)';
+        var cls = chip.state === 'green' ? 'ibx-badge-green' : (chip.state === 'amber' ? 'ibx-badge-amber' : 'ibx-badge-red');
+        if (chip.escalated) cls += ' ibx-badge-escalated';
+        if (chip.stale) cls += ' ibx-badge-stale';
+        if (chip.state === 'red') {
+          addBadge(cell, 'NO GTC', cls, 'No matching GTC closing order | Snapshot: ' + snapTxt + (chip.stale ? ' (stale >24h)' : ''));
+        } else {
+          var pctTxt = chip.pct !== null && chip.pct !== undefined ? Math.round(chip.pct * 100) + '%' : 'n/a';
+          var label = chip.state === 'green' ? 'GTC \u2713 ' + pctTxt : 'GTC ' + pctTxt;
+          addBadge(cell, label, cls, 'Close limit: ' + (chip.order.limitPrice !== null && chip.order.limitPrice !== undefined ? chip.order.limitPrice : 'n/a') +
+            ' | Remain: ' + (chip.order.remain !== null && chip.order.remain !== undefined ? chip.order.remain : 'n/a') +
+            ' | 60% target \u2264 ' + (chip.target !== null && chip.target !== undefined ? chip.target : 'n/a') +
+            ' | Snapshot: ' + snapTxt + (chip.stale ? ' (stale >24h)' : ''));
         }
       });
     }
@@ -764,6 +821,7 @@
     var visible = dataRows(found).length;
     log('orders parsed ' + rows.length + ' / visible ' + visible);
     var dupes = duplicateOrderKeys(rows);
+    try { setSetting('ordersSnapshot', buildOrdersSnapshot(rows, new Date().toISOString())); } catch (e) { /* silent */ }
     var summary = summarizeOrders(rows);
     var totalNotional = summary.totalNotional, staleCount = summary.staleCount;
     rows.forEach(function (r) {

@@ -14,7 +14,7 @@ assert.ok(start >= 0 && end > start, 'parser markers present');
 const parserSrc = src.slice(start, end);
 const mod = { exports: {} };
 // The parser block references `module` only via the guard below it; evaluate block + export line.
-new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, positionsToCsv, ordersToCsv };')(mod, mod.exports);
+new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, positionsToCsv, ordersToCsv };')(mod, mod.exports);
 const P = mod.exports;
 
 const H = ['Instrument', 'Position', 'Change %', 'Cost Basis', 'Market Value', 'Last', 'Avg Price', 'Daily P&L', 'Unrealized P&L', 'Delta', '52wk IV Rank', '52wk IV Pctl', 'P/E', 'Forward P/E', 'Beta', 'Market Cap', 'Social Sentiment Score', 'Social Sentiment Score Change'];
@@ -139,6 +139,26 @@ test('segmented filter state: contradictory states impossible by construction', 
   os.sideSeg = 'sells'; assert.equal(P.matchesRowFilters(buy, 'orders', os, now), false);
   assert.equal(P.filterIsActive(os, 'orders'), true);
   assert.equal(P.filterIsActive(P.defaultFilterState('orders'), 'orders'), false);
+});
+
+test('GTC chips: green / amber / red + escalation + stale + snapshot keeps open only', () => {
+  const short = { underlying: 'AXTI', expiryISO: '2026-11-20', strike: 75, type: 'call', qty: -2, last: 1.0, avgPrice: 2.0 };
+  const mkSnap = (limit, savedAt) => ({ savedAt, orders: [{ underlying: 'AXTI', expiryISO: '2026-11-20', strike: 75, type: 'call', action: 'Buy', limitPrice: limit, remain: 2, status: 'Submitted' }] });
+  const now = new Date('2026-11-13T12:00:00Z');
+  assert.equal(P.gtcTargetLimit(2.0), 0.8);
+  const green = P.gtcChipState(short, mkSnap(0.8, now.toISOString()), now);
+  assert.equal(green.state, 'green'); assert.ok(Math.abs(green.pct - 0.6) < 1e-9);
+  const amber = P.gtcChipState(short, mkSnap(1.5, now.toISOString()), now);
+  assert.equal(amber.state, 'amber'); assert.ok(Math.abs(amber.pct - 0.25) < 1e-9);
+  const red = P.gtcChipState({ ...short, last: 0.5 }, { savedAt: now.toISOString(), orders: [] }, now);
+  assert.equal(red.state, 'red'); assert.equal(red.escalated, true); // captured 75% already
+  const stale = P.gtcChipState(short, mkSnap(0.8, '2026-11-11T12:00:00Z'), now);
+  assert.equal(stale.stale, true); assert.equal(stale.state, 'green');
+  const snap = P.buildOrdersSnapshot([
+    { ...short, action: 'Buy', status: 'Submitted', limitPrice: 0.8, remain: 2, orderId: '1' },
+    { ...short, action: 'Buy', status: 'Cancelled', limitPrice: 0.8, remain: 2, orderId: '2' },
+  ], now.toISOString());
+  assert.equal(snap.orders.length, 1); assert.equal(snap.orders[0].orderId, '1');
 });
 
 test('duplicate strike detection + CSV shape', () => {
