@@ -213,3 +213,30 @@ parsed offline). Where this section and the brief disagree, this section wins:
    affordance: never clicked.
 7. Status format on Orders is a single combined shape:
    `Submitted M/D/YYYY, H:MM AM/PM` (US date format).
+
+## Standing clause: proofread, restart, live verification (every phase, no exceptions)
+
+- The last step before any report is your own self-proofread of the complete
+  change: gaps listed, gaps fixed, result committed and pushed. Your report
+  must name the final commit, the test counts, what the self-proofread
+  changed, and anything still not signed off, in plain words. A report sent
+  before that closing step is invalid and will be sent back.
+- Pushed is not live. A phase counts as done only when all three hold:
+  (1) the commit is on the repo's default branch, verified against the
+  remote head; (2) the running system has been restarted or reloaded onto
+  it: the Kubera server restarted for backend work, and for the userscript
+  the updated file installed in Tampermonkey with the portal page
+  hard-reloaded; (3) live behaviour, re-measured after that restart/reload,
+  matches the claim.
+- UI work needs rendered evidence: a DOM extract or screenshot, account
+  data blurred. Unit tests alone never close a phase. No claim of a visual
+  or live check you did not actually run.
+- Benchmarks and expected counts are re-derived from the current fixtures
+  and source files at each gate, never carried from an earlier prompt or
+  report. If a figure in a prompt and the current source disagree, the
+  source wins and you flag the prompt figure as wrong.
+- The next phase or workstream starts only on an explicit pass that names
+  what was checked live, what was reconciled, and what remains open. Open
+  gaps are carried into the next phase as named preflight items.
+- Molang proofreads independently in code and live after your report.
+  Your report alone never closes a phase.
