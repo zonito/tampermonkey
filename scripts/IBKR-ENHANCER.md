@@ -48,11 +48,11 @@ loop, never blocking the page.
   two-column table of all anchor fields (NLV, Excess Liquidity, Buying
   Power, Maintenance Margin, Unrealized/Realized P&L, Settled Cash when
   present); it closes on toggle, its Close button, or an outside click.
-  The bar's × collapses it to a slim docked chip at bottom-right showing
-  the cushion pill (or a dot + "Margin" when the headline is unresolved);
-  clicking the chip re-expands it. The collapsed state persists in GM
-  storage across reloads and re-renders. The settings "Margin bar" toggle
-  is the only full off.
+  The bar's × collapses it to a slim docked chip in the same bottom-left
+  corner showing the cushion pill (or a dot + "Margin" when the headline
+  is unresolved); clicking the chip re-expands it in place. The collapsed
+  state persists in GM storage across reloads and re-renders. The
+  settings "Margin bar" toggle is the only full off.
   Fail-safe: the headline is anchored on the sidebar account item (the
   largest label ancestor, up to 25 levels, still containing exactly one
   account-ID token; 2+ IDs is the multi-account column and is rejected).
@@ -62,9 +62,15 @@ loop, never blocking the page.
   account ID (inline elements glue alias/ID/currency/value without
   whitespace). Any candidate equal to a labelled field value is rejected,
   and on any mismatch the bar shows labelled fields only and no cushion. If
-  the alias cannot be read, the bar shows the masked account ID. The bar
-  sits bottom-right, clear of the top-right nav icons. Verified pre-live by
-  running the full script in jsdom against both saved fixtures.
+  the alias cannot be read, the bar shows the masked account ID. Since
+  v0.8.2 the bar is a fixed overlay at the bottom left of the viewport
+  (16px from the left and bottom edges, content-sized up to about
+  420px, below the portal's own modals and order ticket); the page
+  scrolls beneath it and the Details overlay opens upward from it,
+  left-aligned, height-capped with internal scrolling on short
+  viewports. The export toast stays bottom right, so the two never
+  share a corner. Verified pre-live by running the full script in jsdom
+  against both saved fixtures.
 - **Positions badges**: DTE from the instrument expiry (Europe/London; red
   <= 7d, amber <= 21d), ITM vs the held underlying's Last (no badge and an
   "underlying price unavailable" tooltip when the underlying is not held),

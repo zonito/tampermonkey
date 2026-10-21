@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-21 (v0.8.2)
+
+- IBKR Enhancer margin bar moved to a fixed bottom-left overlay (16px
+  from the left/bottom edges, content-sized to about 420px, below
+  portal modals and the order ticket). Details opens upward from the
+  bar, left-aligned and height-capped with internal scrolling; the
+  collapsed dock chip lives in the same corner and re-expands in
+  place. The export toast stays bottom right. (Shipped as the next
+  patch rather than folded into v0.8.1, which was already pushed.)
+
 ## 2026-10-21 (v0.8.1)
 
 - IBKR Enhancer toolbar polish: Copy and Export are icon-only pill

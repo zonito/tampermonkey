@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.8.1
+// @version      0.8.2
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders. Optional: exports open orders to local Kubera only.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -541,15 +541,15 @@
 
   var CSS = [
     '[data-ibkr-enhancer]{box-sizing:border-box}',
-    '.ibx-bar{position:fixed;bottom:12px;right:12px;z-index:9999;display:flex;gap:10px;align-items:center;flex-wrap:wrap;max-width:92vw;padding:6px 10px;border-radius:8px;background:rgba(20,22,28,.94);color:#e8e8e8;border:1px solid rgba(255,255,255,.18);font:12px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 4px 18px rgba(0,0,0,.4)}',
+    '.ibx-bar{position:fixed;left:16px;bottom:16px;right:auto;z-index:900;display:flex;gap:10px;align-items:center;flex-wrap:wrap;max-width:min(420px,calc(100vw - 32px));padding:6px 10px;border-radius:8px;background:rgba(20,22,28,.94);color:#e8e8e8;border:1px solid rgba(255,255,255,.18);font:12px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 4px 18px rgba(0,0,0,.4)}',
     '.ibx-bar .ibx-lab{opacity:.65}.ibx-bar .ibx-val{font-weight:600}',
     '.ibx-cushion-green{color:#4caf50}.ibx-cushion-amber{color:#ffb300}.ibx-cushion-red{color:#ef5350}',
     '.ibx-pill-cushion{border-radius:999px;padding:2px 10px;font-weight:800;color:#111}',
     '.ibx-pill-cushion.ibx-cushion-green{background:#43a047;color:#fff}.ibx-pill-cushion.ibx-cushion-amber{background:#ffb300;color:#222}.ibx-pill-cushion.ibx-cushion-red{background:#c62828;color:#fff}.ibx-pill-cushion.ibx-cushion-none{background:#444;color:#bbb}',
-    '.ibx-details{position:fixed;bottom:64px;right:12px;z-index:10001;min-width:300px;background:rgba(20,22,28,.97);color:#e8e8e8;border:1px solid rgba(255,255,255,.2);border-radius:10px;padding:12px 14px;font:12px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.5)}',
+    '.ibx-details{position:fixed;left:16px;bottom:64px;right:auto;z-index:910;min-width:300px;max-width:min(420px,calc(100vw - 32px));max-height:calc(100vh - 96px);overflow-y:auto;background:rgba(20,22,28,.97);color:#e8e8e8;border:1px solid rgba(255,255,255,.2);border-radius:10px;padding:12px 14px;font:12px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.5)}',
     '.ibx-details table{border-collapse:collapse;width:100%}.ibx-details td{padding:2px 6px}.ibx-details td:last-child{text-align:right;font-weight:600}',
     '.ibx-details-cushion{font-size:22px;font-weight:800}',
-    '.ibx-dock{position:fixed;bottom:12px;right:12px;z-index:9999;display:flex;gap:6px;align-items:center;padding:4px 8px;border-radius:999px;background:rgba(20,22,28,.94);border:1px solid rgba(255,255,255,.18);cursor:pointer;font:12px -apple-system,Segoe UI,Roboto,sans-serif}',
+    '.ibx-dock{position:fixed;left:16px;bottom:16px;right:auto;z-index:900;display:flex;gap:6px;align-items:center;padding:4px 8px;border-radius:999px;background:rgba(20,22,28,.94);border:1px solid rgba(255,255,255,.18);cursor:pointer;font:12px -apple-system,Segoe UI,Roboto,sans-serif}',
     '.ibx-dock-dot{width:9px;height:9px;border-radius:50%;background:#888;display:inline-block}',
     '.ibx-badge{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font-size:10px;font-weight:700;vertical-align:middle}',
     '.ibx-badge-red{background:#5a1f1f;color:#ff8a80}.ibx-badge-amber{background:#554410;color:#ffd54f}.ibx-badge-green{background:#1e4620;color:#81c784}.ibx-badge-muted{background:#333;color:#bbb;font-weight:400}',
@@ -585,7 +585,7 @@
     '.ibx-zebra tbody tr:nth-child(even){background:rgba(255,255,255,.03)}',
     '.ibx-compact td,.ibx-compact th{padding-top:2px!important;padding-bottom:2px!important}',
     '.ibx-pos{color:#4caf50}.ibx-neg{color:#ef5350}',
-    '.ibx-panel{position:fixed;bottom:64px;right:12px;z-index:10000;background:rgba(20,22,28,.97);color:#e8e8e8;border:1px solid rgba(255,255,255,.2);border-radius:8px;padding:10px 12px;font:12px/1.6 -apple-system,Segoe UI,Roboto,sans-serif}',
+    '.ibx-panel{position:fixed;left:16px;bottom:64px;right:auto;z-index:920;max-height:calc(100vh - 96px);overflow-y:auto;background:rgba(20,22,28,.97);color:#e8e8e8;border:1px solid rgba(255,255,255,.2);border-radius:8px;padding:10px 12px;font:12px/1.6 -apple-system,Segoe UI,Roboto,sans-serif}',
     '.ibx-summary{padding:4px;font:12px -apple-system,Segoe UI,Roboto,sans-serif;opacity:.9}'
   ].join('\n');
 
