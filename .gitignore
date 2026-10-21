@@ -1,0 +1,10 @@
+# Local page fixtures: broker/bank saved HTML contains account data, never commit
+fixture-*.html
+fixtures/
+*.local.html
+Orders*.html
+Positions*.html
+
+# Local scratch
+.DS_Store
+node_modules/
