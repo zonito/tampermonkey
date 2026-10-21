@@ -16,12 +16,17 @@ CSV to the clipboard only.
   Margin, Unrealized P&L, plus cushion % = Excess Liquidity / NLV (green
   > 20%, amber 10–20%, red < 10%). Displays the account alias it read.
   Fail-safe: the headline is anchored on the sidebar account item (the
-  smallest label ancestor whose subtree also contains the account-ID token);
-  it requires ID + currency + signed change in the item header before the
-  summary list, rejects any candidate equal to a labelled field value, and
-  on any mismatch shows the labelled fields only and no cushion. If the
-  alias cannot be read, the bar shows the masked account ID, never
-  "unknown". The bar sits bottom-right, clear of the top-right nav icons.
+  largest label ancestor, up to 25 levels, still containing exactly one
+  account-ID token; 2+ IDs is the multi-account column and is rejected).
+  The header is the item text before the first summary label (cut set
+  includes Settled Cash and Realized P&L); headline is the first money value
+  after the currency in that header, with the last ID-shaped token as the
+  account ID (inline elements glue alias/ID/currency/value without
+  whitespace). Any candidate equal to a labelled field value is rejected,
+  and on any mismatch the bar shows labelled fields only and no cushion. If
+  the alias cannot be read, the bar shows the masked account ID. The bar
+  sits bottom-right, clear of the top-right nav icons. Verified pre-live by
+  running the full script in jsdom against both saved fixtures.
 - **Positions badges**: DTE from the instrument expiry (Europe/London; red
   <= 7d, amber <= 21d), ITM vs the held underlying's Last (no badge and an
   "underlying price unavailable" tooltip when the underlying is not held),

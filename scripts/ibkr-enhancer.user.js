@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.1.1
+// @version      0.1.2
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -300,7 +300,19 @@
     if (!cell) return [''];
     var txt = '';
     try { txt = cell.innerText || ''; } catch (e) { txt = ''; }
-    if (!txt) txt = cell.textContent || '';
+    if (!txt || !txt.trim()) {
+      var out = '';
+      (function walk(n) {
+        if (n.nodeType === 3) { out += n.textContent; return; }
+        if (n.nodeType !== 1) return;
+        if (n.tagName === 'BR') { out += '\n'; return; }
+        var block = /^(DIV|P|LI|TR|SECTION)$/.test(n.tagName);
+        if (block) out += '\n'; else out += ' ';
+        Array.prototype.forEach.call(n.childNodes, walk);
+        if (block) out += '\n';
+      })(cell);
+      txt = out;
+    }
     return String(txt).split('\n');
   }
   function cellText(cell) { return cellLines(cell).join('\n').trim(); }
@@ -368,26 +380,36 @@
     }
     var fields = {};
     labels.forEach(function (lab) { fields[lab] = labelledValue(lab); });
-    // Headline anchor: the sidebar account item = smallest ancestor of the
-    // summary labels whose subtree also contains the account-ID token.
+    // Headline anchor: the sidebar account item = largest ancestor of the
+    // summary labels (up to 25 levels) still containing exactly one
+    // account-ID token; 2+ IDs means the multi-account column, reject it.
+    var cutLabels = labels.concat(['Settled Cash', 'Realized P&L']);
     var alias = null, headline = null, maskedId = null;
     var item = null, node = firstLabelEl;
-    for (var depth = 0; node && depth < 10; depth++) {
-      if (/\b[A-Z]\d{5,}\b/.test(node.textContent || '')) { item = node; break; }
+    for (var depth = 0; node && depth < 25; depth++) {
+      var ids = (node.textContent || '').match(/\b[A-Z]\d{5,}\b/g) || [];
+      if (ids.length === 1) item = node;
+      if (ids.length >= 2) break;
       node = node.parentElement;
     }
     if (item) {
       var fullText = (item.textContent || '').replace(/\s+/g, ' ').trim();
       var cut = fullText.length;
-      labels.forEach(function (lab) { var i = fullText.indexOf(lab); if (i >= 0 && i < cut) cut = i; });
+      cutLabels.forEach(function (lab) { var i = fullText.indexOf(lab); if (i >= 0 && i < cut) cut = i; });
       var header = fullText.slice(0, cut);
-      var idm = header.match(/\b([A-Z]\d{5,})\b/);
-      if (idm) {
-        maskedId = idm[1].charAt(0) + '\u2022\u2022\u2022' + idm[1].slice(-2);
-        var curIdx = header.search(/\b(USD|GBP|EUR)\b/);
-        var signed = /[+-][\d,]+(?:\.\d+)?/.test(header);
-        if (curIdx >= 0 && signed) {
-          var afterCur = header.slice(curIdx).replace(/^(USD|GBP|EUR)\b/, '');
+      // Inline elements glue alias/ID/currency/value without whitespace, and
+      // the page header strip precedes the account segment: take the LAST
+      // ID-shaped token in the header as the account ID.
+      var idMatches = header.match(/[A-Z]\d{5,}/g) || [];
+      var idTok = idMatches.length ? idMatches[idMatches.length - 1] : null;
+      var idIdx = idTok ? header.lastIndexOf(idTok) : -1;
+      if (idTok && idIdx >= 0) {
+        maskedId = idTok.charAt(0) + '\u2022\u2022\u2022' + idTok.slice(-2);
+        var afterId = header.slice(idIdx + idTok.length);
+        var curM = afterId.match(/(USD|GBP|EUR)/);
+        var signed = /[+-][\d,]+(?:\.\d+)?/.test(afterId);
+        if (curM && signed) {
+          var afterCur = afterId.slice(curM.index + curM[1].length);
           var money = afterCur.match(/[+-]?[\d,]+(?:\.\d{2})/);
           if (money) {
             var candidate = parseNumber(money[0]);
@@ -395,8 +417,9 @@
             if (!clashes) headline = candidate;
           }
         }
-        var before = header.split(idm[1])[0].trim().replace(/[|•·\-:]+$/, '').trim();
-        alias = before ? before.split(/\s+/).slice(-3).join(' ') : maskedId;
+        var beforeId = header.slice(0, idIdx);
+        var aliasM = beforeId.match(/([A-Za-z][A-Za-z'-]{1,})\s*$/);
+        alias = aliasM ? aliasM[1] : maskedId;
       }
     }
     return { fields: fields, headline: headline, alias: alias, maskedId: maskedId };
@@ -430,7 +453,7 @@
       var s = el('span'); var l = el('span', 'ibx-lab', label + ': '); var v = el('span', 'ibx-val', value);
       s.appendChild(l); s.appendChild(v); return s;
     }
-    bar.appendChild(pair('Account', ctx.alias || ctx.maskedId || 'Account \u2022\u2022\u2022'));
+    bar.appendChild(pair('Account', ctx.alias || ctx.maskedId || EM_DASH));
     bar.appendChild(pair('NLV', fmtMoney(ctx.headline)));
     bar.appendChild(pair('Excess Liq', fmtMoney(ctx.fields['Excess Liquidity'])));
     bar.appendChild(pair('Buying Power', fmtMoney(ctx.fields['Buying Power'])));

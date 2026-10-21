@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-21 (v0.1.2)
+
+- IBKR Enhancer anchor correction (jsdom gate against both fixtures):
+  headline walk up to 25 levels taking the largest ancestor with exactly one
+  account-ID token, extended cut-label set, last-ID-token account segment,
+  block-aware cell text fallback. Removed the remaining placeholder literal
+  from the bar fallback chain. Positions bar in jsdom: alias, NLV, labelled
+  fields and 19.7% cushion all render.
+
 ## 2026-10-21 (v0.1.1)
 
 - IBKR Enhancer fix round after live proofread: re-anchor headline value on
