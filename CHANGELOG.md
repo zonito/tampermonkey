@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-21 (v0.1.4)
+
+- IBKR Enhancer filter bars redesigned: segmented controls for Type, Expiry
+  and Side (single-scalar state, contradictory toggles impossible), pill
+  toggles with filled/check/`aria-pressed` ON state, conditional "Clear all".
+
 ## 2026-10-21 (v0.1.3)
 
 - IBKR Enhancer: terminal order statuses (Cancelled, ApiCancelled, Filled,

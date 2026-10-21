@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.1.3
+// @version      0.1.4
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -214,6 +214,36 @@
     });
     return { openCount: openCount, totalNotional: totalNotional, staleCount: staleCount };
   }
+  function defaultFilterState(kind) {
+    return kind === 'positions'
+      ? { text: '', typeSeg: 'all', expirySeg: 'any', itmOnly: false }
+      : { text: '', sideSeg: 'all', stale: false };
+  }
+  function filterIsActive(state, kind) {
+    if (!state) return false;
+    if (state.text) return true;
+    if (kind === 'positions') return state.typeSeg !== 'all' || state.expirySeg !== 'any' || !!state.itmOnly;
+    return state.sideSeg !== 'all' || !!state.stale;
+  }
+  function matchesRowFilters(r, kind, state, now) {
+    if (!r || !state) return true;
+    var text = state.text || '';
+    if (text && (r.instrument + ' ' + r.underlying).toLowerCase().indexOf(text) === -1) return false;
+    if (kind === 'positions') {
+      if (state.typeSeg === 'options' && r.type === 'equity') return false;
+      if (state.typeSeg === 'equities' && r.type !== 'equity') return false;
+      if (state.itmOnly && !r._itm) return false;
+      var days = dte(r.expiry, now);
+      if (state.expirySeg === 'd7' && !(days !== null && days <= 7)) return false;
+      if (state.expirySeg === 'd21' && !(days !== null && days <= 21)) return false;
+    } else {
+      if (!isOpenOrder(r) && (state.sideSeg !== 'all' || state.stale)) return false;
+      if (state.sideSeg === 'buys' && r.action !== 'Buy') return false;
+      if (state.sideSeg === 'sells' && r.action !== 'Sell') return false;
+      if (state.stale) { var age = ageDays(r.statusDate, now); if (!(age !== null && age > 14)) return false; }
+    }
+    return true;
+  }
   function duplicateOrderKeys(orders) {
     var seen = {}, dups = {};
     (orders || []).forEach(function (o, i) {
@@ -265,6 +295,7 @@
     premiumCaptured: premiumCaptured, isITM: isITM, netDeltaExposure: netDeltaExposure,
     remainingNotional: remainingNotional, duplicateOrderKeys: duplicateOrderKeys, orderKey: orderKey,
     isTerminalStatus: isTerminalStatus, isOpenOrder: isOpenOrder, summarizeOrders: summarizeOrders,
+    defaultFilterState: defaultFilterState, filterIsActive: filterIsActive, matchesRowFilters: matchesRowFilters,
     positionsToCsv: positionsToCsv, ordersToCsv: ordersToCsv };
   if (typeof module !== 'undefined' && module.exports) module.exports = PARSER;
 
@@ -294,6 +325,13 @@
     '.ibx-filterbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 4px;font:12px -apple-system,Segoe UI,Roboto,sans-serif}',
     '.ibx-filterbar input[type=text]{min-width:180px;padding:4px 8px;border-radius:6px}',
     '.ibx-filterbar button,.ibx-bar button{cursor:pointer;border-radius:6px;padding:3px 8px}',
+    '.ibx-flabel{opacity:.6;font-weight:600}',
+    '.ibx-seg{display:inline-flex;border:1px solid rgba(128,128,128,.55);border-radius:999px;overflow:hidden}',
+    '.ibx-seg button{border:0;border-radius:0;background:transparent;color:inherit;opacity:.75}',
+    '.ibx-seg button.ibx-on{background:#0b5cad;color:#fff;opacity:1;font-weight:700}',
+    '.ibx-pill{border:1px solid rgba(128,128,128,.55);background:transparent;color:inherit;opacity:.8;border-radius:999px!important}',
+    '.ibx-pill.ibx-on{background:#0b5cad;color:#fff;border-color:#0b5cad;opacity:1;font-weight:700}',
+    '.ibx-clear{border:1px solid rgba(128,128,128,.55);background:transparent;color:inherit}',
     '.ibx-subtotal{font-weight:700;background:rgba(255,255,255,.06)}',
     '.ibx-dupe{outline:2px solid #ffb300;outline-offset:-2px}',
     '.ibx-sticky thead th{position:sticky;top:0;z-index:2}',
@@ -584,25 +622,7 @@
     if (tbody && found.table._ibxOriginalOrder) found.table._ibxOriginalOrder.forEach(function (tr) { tbody.appendChild(tr); });
   }
 
-  function rowMatchesFilters(r, kind, state) {
-    var text = state.text;
-    if (text && (r.instrument + ' ' + r.underlying).toLowerCase().indexOf(text) === -1) return false;
-    if (kind === 'positions') {
-      if (state.optionsOnly && r.type === 'equity') return false;
-      if (state.equitiesOnly && r.type !== 'equity') return false;
-      if (state.itmOnly && !r._itm) return false;
-      var days = dte(r.expiry);
-      if (state.d7 && !(days !== null && days <= 7)) return false;
-      if (state.d21 && !(days !== null && days <= 21)) return false;
-    } else {
-      if (!isOpenOrder(r) && (state.buysOnly || state.sellsOnly || state.stale)) return false;
-      if (state.buysOnly && r.action !== 'Buy') return false;
-      if (state.sellsOnly && r.action !== 'Sell') return false;
-      var age = ageDays(r.statusDate);
-      if (state.stale && !(age !== null && age > 14)) return false;
-    }
-    return true;
-  }
+  function rowMatchesFilters(r, kind, state) { return matchesRowFilters(r, kind, state); }
 
   var activeFilterInput = null;
   var slashBound = false;
@@ -626,30 +646,59 @@
     var existing = found.table.parentElement && found.table.parentElement.querySelector('[data-ibkr-enhancer="filterbar"]');
     if (existing) { var ex = existing.querySelector('input[type=text]'); if (ex) { activeFilterInput = ex; ensureSlashListener(); } return; }
     var bar = el('div', 'ibx-filterbar'); bar.setAttribute('data-ibkr-enhancer', 'filterbar');
+    bar.appendChild(el('span', 'ibx-flabel', 'Filters'));
     var input = document.createElement('input'); input.type = 'text'; input.placeholder = 'Filter instrument / underlying ( / )';
     input.setAttribute('data-ibkr-enhancer', '1');
     bar.appendChild(input);
-    var state = { text: '', optionsOnly: false, equitiesOnly: false, itmOnly: false, d7: false, d21: false, buysOnly: false, sellsOnly: false, stale: false };
-    function toggle(label, key) {
-      var b = el('button', '', label);
-      b.addEventListener('click', function () { state[key] = !state[key]; b.style.fontWeight = state[key] ? '700' : '400'; apply(); });
+    var state = defaultFilterState(kind);
+    var refreshers = [];
+    function paintBtn(b, on, label) {
+      b.classList.toggle('ibx-on', !!on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.textContent = (on ? '\u2713 ' : '') + label;
+    }
+    function segmented(options, get, set) {
+      var wrap = el('span', 'ibx-seg'); wrap.setAttribute('role', 'group');
+      var btns = options.map(function (opt) {
+        var b = el('button', '', opt[1]);
+        b.addEventListener('click', function () { set(opt[0]); refresh(); apply(); });
+        wrap.appendChild(b); return { b: b, value: opt[0], label: opt[1] };
+      });
+      refreshers.push(function () { btns.forEach(function (x) { paintBtn(x.b, get() === x.value, x.label); }); });
+      bar.appendChild(wrap);
+    }
+    function pill(label, get, set) {
+      var b = el('button', 'ibx-pill', label);
+      b.addEventListener('click', function () { set(!get()); refresh(); apply(); });
+      refreshers.push(function () { paintBtn(b, get(), label); });
       bar.appendChild(b);
     }
-    if (kind === 'positions') { toggle('Options only', 'optionsOnly'); toggle('Equities only', 'equitiesOnly'); toggle('ITM only', 'itmOnly'); toggle('Expiring \u22647d', 'd7'); toggle('Expiring \u226421d', 'd21'); }
-    else { toggle('Buys only', 'buysOnly'); toggle('Sells only', 'sellsOnly'); toggle('Stale >14d', 'stale'); }
-    var reset = el('button', '', 'Reset');
-    reset.addEventListener('click', function () {
-      Object.keys(state).forEach(function (k) { state[k] = (k === 'text' ? '' : false); });
+    function refresh() { refreshers.forEach(function (f) { f(); }); syncClear(); }
+    if (kind === 'positions') {
+      segmented([['all', 'All'], ['options', 'Options'], ['equities', 'Equities']], function () { return state.typeSeg; }, function (v) { state.typeSeg = v; });
+      segmented([['any', 'Any'], ['d21', '\u226421d'], ['d7', '\u22647d']], function () { return state.expirySeg; }, function (v) { state.expirySeg = v; });
+      pill('ITM only', function () { return state.itmOnly; }, function (v) { state.itmOnly = v; });
+    } else {
+      segmented([['all', 'All'], ['buys', 'Buys'], ['sells', 'Sells']], function () { return state.sideSeg; }, function (v) { state.sideSeg = v; });
+      pill('Stale >14d', function () { return state.stale; }, function (v) { state.stale = v; });
+    }
+    var clear = el('button', 'ibx-clear', 'Clear all');
+    clear.style.display = 'none';
+    clear.addEventListener('click', function () {
+      state = defaultFilterState(kind);
       input.value = '';
       rows.forEach(function (r) { r._tr.style.display = ''; });
-      Array.prototype.forEach.call(bar.querySelectorAll('button'), function (b) { b.style.fontWeight = '400'; });
+      refresh();
     });
-    bar.appendChild(reset);
+    bar.appendChild(clear);
+    function syncClear() { clear.style.display = filterIsActive(state, kind) ? '' : 'none'; }
     function apply() {
       state.text = input.value.trim().toLowerCase();
       rows.forEach(function (r) { r._tr.style.display = rowMatchesFilters(r, kind, state) ? '' : 'none'; });
+      syncClear();
     }
     input.addEventListener('input', apply);
+    refresh();
     if (found.table.parentElement) found.table.parentElement.insertBefore(bar, found.table);
     activeFilterInput = input;
     ensureSlashListener();

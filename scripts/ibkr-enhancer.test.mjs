@@ -14,7 +14,7 @@ assert.ok(start >= 0 && end > start, 'parser markers present');
 const parserSrc = src.slice(start, end);
 const mod = { exports: {} };
 // The parser block references `module` only via the guard below it; evaluate block + export line.
-new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, positionsToCsv, ordersToCsv };')(mod, mod.exports);
+new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, positionsToCsv, ordersToCsv };')(mod, mod.exports);
 const P = mod.exports;
 
 const H = ['Instrument', 'Position', 'Change %', 'Cost Basis', 'Market Value', 'Last', 'Avg Price', 'Daily P&L', 'Unrealized P&L', 'Delta', '52wk IV Rank', '52wk IV Pctl', 'P/E', 'Forward P/E', 'Beta', 'Market Cap', 'Social Sentiment Score', 'Social Sentiment Score Change'];
@@ -113,6 +113,32 @@ test('terminal statuses: cancelled twin gives no duplicate and contributes 0', (
   // two genuinely open twins still flag
   const d2 = P.duplicateOrderKeys([submitted, { ...base, status: 'Submitted' }]);
   assert.equal(d2['AXTI|2026-11-20|75'], true);
+});
+
+test('segmented filter state: contradictory states impossible by construction', () => {
+  const ps = P.defaultFilterState('positions');
+  assert.deepEqual(Object.keys(ps).sort(), ['expirySeg', 'itmOnly', 'text', 'typeSeg']);
+  assert.equal(ps.typeSeg, 'all'); assert.equal(ps.expirySeg, 'any');
+  const eq = { instrument: 'ACME Acme', underlying: 'ACME', type: 'equity', expiry: null, _itm: null };
+  const opt = { instrument: "ACME Nov20'26 35 Put", underlying: 'ACME', type: 'put', expiry: new Date(Date.UTC(2026, 10, 20)), _itm: false };
+  const now = new Date('2026-11-13T12:00:00Z');
+  ps.typeSeg = 'options';
+  assert.equal(P.matchesRowFilters(opt, 'positions', ps, now), true);
+  assert.equal(P.matchesRowFilters(eq, 'positions', ps, now), false);
+  ps.typeSeg = 'equities'; // single scalar: selecting Equities replaces Options, never both
+  assert.equal(P.matchesRowFilters(eq, 'positions', ps, now), true);
+  assert.equal(P.matchesRowFilters(opt, 'positions', ps, now), false);
+  ps.typeSeg = 'all'; ps.expirySeg = 'd7';
+  assert.equal(P.matchesRowFilters(opt, 'positions', ps, now), true);
+  ps.expirySeg = 'd21'; // one expiry value at a time; <=7 and <=21 cannot combine
+  assert.equal(P.matchesRowFilters(opt, 'positions', ps, now), true);
+  const os = P.defaultFilterState('orders');
+  assert.deepEqual(Object.keys(os).sort(), ['sideSeg', 'stale', 'text']);
+  const buy = { instrument: 'X 1', underlying: 'X', type: 'put', action: 'Buy', status: 'Submitted', statusDate: new Date('2026-11-01T00:00:00Z') };
+  os.sideSeg = 'buys'; assert.equal(P.matchesRowFilters(buy, 'orders', os, now), true);
+  os.sideSeg = 'sells'; assert.equal(P.matchesRowFilters(buy, 'orders', os, now), false);
+  assert.equal(P.filterIsActive(os, 'orders'), true);
+  assert.equal(P.filterIsActive(P.defaultFilterState('orders'), 'orders'), false);
 });
 
 test('duplicate strike detection + CSV shape', () => {

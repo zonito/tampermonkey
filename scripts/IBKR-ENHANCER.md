@@ -34,10 +34,14 @@ CSV to the clipboard only.
 - **Group by underlying** (default off, remembered): equity with its options
   plus a subtotal row (market value, unrealized/daily P&L, net delta exposure
   = qty x delta x 100 for options, qty for shares).
-- **Filter bars** (Positions + Orders): text filter plus toggles (Options /
-  Equities / ITM / expiring <= 7d / <= 21d; Buys / Sells / stale > 14d).
-  `/` focuses the text box. Hiding is visual only; Reset restores the native
-  view.
+- **Filter bars** (Positions + Orders): one compact "Filters" row per table.
+  Segmented controls (Positions: Type All / Options / Equities, Expiry
+  Any / <=21d / <=7d; Orders: Side All / Buys / Sells) plus independent pill
+  toggles (ITM only; Stale >14d). ON = filled accent, check mark,
+  `aria-pressed`; OFF = muted outline. Segmented state is a single scalar,
+  so contradictory combinations cannot be represented. "Clear all" appears
+  only while a filter is active and resets segments/toggles/text. `/`
+  focuses the text box. Hiding is visual only.
 - **Orders**: terminal statuses (Cancelled, ApiCancelled, Filled, Inactive,
   Expired, Rejected) are not open: excluded from duplicate detection, the
   summary line and all badges, and from the Buy/Sell/Stale filtered sets.
