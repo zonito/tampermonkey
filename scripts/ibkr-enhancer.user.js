@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.9.1
-// @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders. Optional: exports open orders to local Kubera only.
+// @version      0.10.0
+// @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders. Optional: exports open orders to local Kubera only. Session keepalive: same-origin POST /v1/api/tickle only.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
 // @match        https://www.interactivebrokers.com/portal/*
@@ -560,6 +560,30 @@
     if (now - s.lastSentAt >= 300000) return { send: true, reason: 'heartbeat' };
     return { send: false, reason: 'unchanged' };
   }
+  var KEEPALIVE_INTERVAL_MS = 240000; // 4 minutes between successful tickles
+  var KEEPALIVE_IDLE_RELOAD_MS = 600000; // reload fallback needs 10 idle minutes
+  function keepaliveDue(state, nowMs) {
+    var s = state || {};
+    if (s.lost) return false;
+    if (!s.lastSuccessAt) return true; // first tickle shortly after load
+    return nowMs - s.lastSuccessAt >= KEEPALIVE_INTERVAL_MS;
+  }
+  function tickleAuthState(status, body) {
+    if (status !== 200) return 'fail';
+    var auth = body && body.iserver && body.iserver.authStatus ? body.iserver.authStatus.authenticated : undefined;
+    if (auth === true) return 'ok';
+    if (auth === false) return 'lost';
+    return 'ok-shape'; // 200 but the documented field is absent: success, flagged
+  }
+  function reloadFallbackReady(state, nowMs, guards) {
+    var s = state || {}; var g = guards || {};
+    if (s.lost) return false;
+    if ((s.failures || 0) < 2) return false;
+    if (s.fallbackUsed) return false;
+    if (g.ticketOpen || g.modalOpen) return false;
+    var lastActivity = typeof s.lastActivityAt === 'number' ? s.lastActivityAt : 0;
+    return nowMs - lastActivity >= KEEPALIVE_IDLE_RELOAD_MS;
+  }
   // ================= PARSER END =================
 
   var PARSER = { parseNumber: parseNumber, parseInstrument: parseInstrument, normalizeHeader: normalizeHeader,
@@ -577,12 +601,14 @@
     buildBrokerSnapshots: buildBrokerSnapshots,
     parseFeedAccounts: parseFeedAccounts, isFeedAccountAllowed: isFeedAccountAllowed,
     buildAccountSnapshot: buildAccountSnapshot, accountSyncFingerprint: accountSyncFingerprint,
-    accountSyncDecision: accountSyncDecision };
+    accountSyncDecision: accountSyncDecision,
+    keepaliveDue: keepaliveDue, tickleAuthState: tickleAuthState, reloadFallbackReady: reloadFallbackReady,
+    KEEPALIVE_INTERVAL_MS: KEEPALIVE_INTERVAL_MS, KEEPALIVE_IDLE_RELOAD_MS: KEEPALIVE_IDLE_RELOAD_MS };
   if (typeof module !== 'undefined' && module.exports) module.exports = PARSER;
 
   // ---------- settings ----------
   var DEFAULTS = { marginBar: true, badges: true, grouping: false, filters: true, orderAges: true,
-    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, ticketFill: true, exportOrders: false, accountSync: false, kuberaIngestToken: '', feedAccounts: 'U19377323,U26948221', density: 'comfortable', dismissedBar: false, barCollapsed: false };
+    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, ticketFill: true, exportOrders: false, accountSync: false, sessionKeepalive: true, kuberaIngestToken: '', feedAccounts: 'U19377323,U26948221', density: 'comfortable', dismissedBar: false, barCollapsed: false };
   function getSetting(key) {
     try { if (typeof GM_getValue === 'function') { var v = GM_getValue('ibx.' + key, undefined); if (v !== undefined) return v; } } catch (e) { /* silent */ }
     try { var raw = window.localStorage.getItem('ibx.' + key); return raw === null ? DEFAULTS[key] : JSON.parse(raw); } catch (e) { return DEFAULTS[key]; }
@@ -593,7 +619,7 @@
   }
   function allOff() {
     return !getSetting('marginBar') && !getSetting('badges') && !getSetting('grouping') &&
-      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips') && !getSetting('wingChips') && !getSetting('ccChips') && !getSetting('ticketFill') && !getSetting('exportOrders') && !getSetting('accountSync');
+      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips') && !getSetting('wingChips') && !getSetting('ccChips') && !getSetting('ticketFill') && !getSetting('exportOrders') && !getSetting('accountSync') && !getSetting('sessionKeepalive');
   }
 
   var CSS = [
@@ -934,7 +960,7 @@
     var title = el('div', '', 'IBKR Enhancer settings'); title.style.fontWeight = '700'; panel.appendChild(title);
     [['marginBar', 'Margin bar'], ['badges', 'Positions badges'], ['grouping', 'Group by underlying'],
      ['filters', 'Filter bars'], ['orderAges', 'Order age / notional'], ['copyButtons', 'Copy CSV buttons'],
-     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips'], ['wingChips', 'Wing pairing chips'], ['ccChips', 'Covered-call chips'], ['ticketFill', 'Order ticket GTC fill'], ['exportOrders', 'Export orders to Kubera'], ['accountSync', 'Sync account values to Kubera']].forEach(function (pairDef) {
+     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips'], ['wingChips', 'Wing pairing chips'], ['ccChips', 'Covered-call chips'], ['ticketFill', 'Order ticket GTC fill'], ['exportOrders', 'Export orders to Kubera'], ['accountSync', 'Sync account values to Kubera'], ['sessionKeepalive', 'Keep IBKR session alive']].forEach(function (pairDef) {
       var row = el('label'); row.style.display = 'block';
       var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!getSetting(pairDef[0]);
       cb.setAttribute('data-ibkr-enhancer', '1');
@@ -963,6 +989,10 @@
     syncLine.setAttribute('data-ibkr-enhancer', 'sync-status');
     syncLine.style.opacity = '.75';
     panel.appendChild(syncLine);
+    var keepLine = el('div', '', keepaliveStatusText());
+    keepLine.setAttribute('data-ibkr-enhancer', 'keepalive-status');
+    keepLine.style.opacity = '.75';
+    panel.appendChild(keepLine);
     var dbgBtn = el('button', '', 'Copy anchor debug');
     dbgBtn.addEventListener('click', function () {
       try { findAccountContext(); } catch (e) { /* silent */ }
@@ -1413,6 +1443,99 @@
     });
   }
 
+  // ---- IBKR session keepalive: same-origin tickle, guarded reload fallback ----
+  // The ONLY page-origin network call the enhancer makes: POST
+  // /v1/api/tickle with the portal's own session cookie. It reads no
+  // account data and changes nothing; the response is never stored.
+  var keepaliveState = { lastSuccessAt: 0, failures: 0, lost: false, fallbackUsed: false, lastActivityAt: Date.now(), inFlight: false };
+  var keepaliveStatus = 'Session keepalive: not tickled yet';
+  function keepaliveStatusText() {
+    if (!getSetting('sessionKeepalive')) return 'Session keepalive: off';
+    return keepaliveStatus;
+  }
+  function setKeepaliveStatus(text) {
+    keepaliveStatus = text;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-ibkr-enhancer="keepalive-status"]'), function (node) {
+      node.textContent = keepaliveStatusText();
+    });
+  }
+  function keepaliveGuards() {
+    // The portal keeps dormant dialogs in the DOM (display:none /
+    // aria-hidden ancestors); only a visibly open dialog blocks.
+    var modalOpen = Array.prototype.some.call(document.querySelectorAll('[role="dialog"], [aria-modal="true"]'), function (node) {
+      if (node.closest && node.closest('[aria-hidden="true"]')) return false;
+      for (var cur = node; cur && cur !== document.body; cur = cur.parentElement) {
+        if (cur.style && cur.style.display === 'none') return false;
+      }
+      try { return window.getComputedStyle(node).display !== 'none'; } catch (e) { return true; }
+    });
+    return {
+      ticketOpen: !!document.querySelector('.order-ticket__sidebar'),
+      modalOpen: modalOpen
+    };
+  }
+  function noteUserActivity() {
+    keepaliveState.lastActivityAt = Date.now();
+    try { window.sessionStorage.removeItem('ibx.keepaliveReloaded'); } catch (e) { /* silent */ }
+  }
+  function keepaliveTick() {
+    if (!getSetting('sessionKeepalive')) { setKeepaliveStatus(keepaliveStatus); return; }
+    if (keepaliveState.lost || keepaliveState.inFlight) return;
+    var now = Date.now();
+    if (!keepaliveDue(keepaliveState, now)) return;
+    keepaliveState.inFlight = true;
+    var settled = false;
+    function done(state, status) {
+      if (settled) return; settled = true;
+      keepaliveState.inFlight = false;
+      var at = new Date();
+      var hms = ('0' + at.getHours()).slice(-2) + ':' + ('0' + at.getMinutes()).slice(-2) + ':' + ('0' + at.getSeconds()).slice(-2);
+      if (state === 'ok' || state === 'ok-shape') {
+        if (state === 'ok-shape') log('tickle returned 200 without iserver.authStatus.authenticated (shape drift)');
+        keepaliveState.lastSuccessAt = Date.now();
+        keepaliveState.failures = 0;
+        try { window.sessionStorage.removeItem('ibx.keepaliveReloaded'); } catch (e) { /* silent */ }
+        setKeepaliveStatus('Session keepalive: last ' + hms);
+        return;
+      }
+      if (state === 'lost') {
+        keepaliveState.lost = true;
+        setKeepaliveStatus('Session keepalive: session lost \u2014 log in again');
+        log('tickle reports the session is no longer authenticated; keepalive stopped');
+        return;
+      }
+      keepaliveState.failures += 1;
+      log('tickle failed (' + (status || 'network error') + '), consecutive failures: ' + keepaliveState.failures);
+      var guards = keepaliveGuards();
+      var reloaded = false;
+      try { reloaded = !!window.sessionStorage.getItem('ibx.keepaliveReloaded'); } catch (e) { reloaded = false; }
+      keepaliveState.fallbackUsed = reloaded;
+      if (reloadFallbackReady(keepaliveState, Date.now(), guards)) {
+        try { window.sessionStorage.setItem('ibx.keepaliveReloaded', '1'); } catch (e) { /* silent */ }
+        log('tickle failing and page idle with no ticket/modal open: one fallback reload');
+        window.location.reload();
+      }
+    }
+    try {
+      fetch('/v1/api/tickle', { method: 'POST', credentials: 'include' }).then(function (res) {
+        if (res.status !== 200) { done('fail', res.status); return null; }
+        return res.json().catch(function () { return null; });
+      }).then(function (body) {
+        if (body === null && keepaliveState.inFlight === false) return; // non-200 handled above
+        if (body === null) { done('ok-shape', 200); return; }
+        done(tickleAuthState(200, body), 200);
+      }).catch(function () { done('fail', 0); });
+    } catch (e) { done('fail', 0); }
+  }
+  var keepaliveTimer = null;
+  function startKeepalive() {
+    if (keepaliveTimer) return;
+    window.addEventListener('pointerdown', noteUserActivity, true);
+    window.addEventListener('keydown', noteUserActivity, true);
+    setTimeout(keepaliveTick, 15000); // first tickle within the first minute
+    keepaliveTimer = setInterval(keepaliveTick, 30000); // timestamp-driven; throttling cannot drift it
+  }
+
   function doExportOrders(force) {
     if (!getSetting('exportOrders') || exportState.inFlight) return;
     var rows = liveRows.orders || [];
@@ -1741,6 +1864,7 @@
 
   function boot() {
     window.addEventListener('hashchange', scheduleRun);
+    startKeepalive();
     var main = document.querySelector('#cp-ib-app-main-content');
     if (main) {
       var obs = new MutationObserver(function (muts) {

@@ -37,6 +37,25 @@ next throttled read supersedes it. Kubera derives cushion server-side
 and answers stale/duplicate captures with `accepted: false`, which
 counts as success here.
 
+Session keepalive (v0.10.0, "Keep IBKR session alive", default on):
+the enhancer's only page-origin network call — a same-origin `fetch`
+POST to `/v1/api/tickle` with `credentials: 'include'` every 4
+minutes, timestamp-driven so background-tab throttling cannot drift
+it, first tickle within the first minute. It is a session call, not
+an account action: it reads no account data, and the response is
+never stored (only the last-tickle time and its authenticated flag
+live in memory and in the gear-panel line). If the tickle reports
+`iserver.authStatus.authenticated: false`, the keepalive stops — a
+reload cannot resurrect an expired session. If the tickle call
+itself fails twice in a row, it falls back to one page reload per
+idle period, only when the user has been idle 10+ minutes and no
+order ticket and no visibly open modal is present (the portal keeps
+dormant `display: none` dialogs in the DOM; those do not block).
+Limits, honestly: neither the tickle nor the reload beats IBKR's
+absolute session expiry or a competing session (mobile/TWS login) —
+this feature targets the inactivity logout only, which is what
+otherwise silently starves the Kubera margin feed.
+
 ## Kubera export (v0.8.0, Orders page only, default off; toolbar/toast polish v0.8.1)
 
 Settings toggle "Export orders to Kubera" plus a "Kubera ingest token"

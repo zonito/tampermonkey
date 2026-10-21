@@ -14,7 +14,7 @@ assert.ok(start >= 0 && end > start, 'parser markers present');
 const parserSrc = src.slice(start, end);
 const mod = { exports: {} };
 // The parser block references `module` only via the guard below it; evaluate block + export line.
-new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, parseInstrumentSearch, buildPositionsSnapshot, findShortPosition, ticketFillPlan, positionsToCsv, ordersToCsv, formatLondonCapturedAt, currencyFromText, brokerOrderFromParsed, exportedOrdersComplete, buildBrokerSnapshots, buildAccountSnapshot, accountSyncFingerprint, accountSyncDecision, parseFeedAccounts, isFeedAccountAllowed };')(mod, mod.exports);
+new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, parseInstrumentSearch, buildPositionsSnapshot, findShortPosition, ticketFillPlan, positionsToCsv, ordersToCsv, formatLondonCapturedAt, currencyFromText, brokerOrderFromParsed, exportedOrdersComplete, buildBrokerSnapshots, buildAccountSnapshot, accountSyncFingerprint, accountSyncDecision, parseFeedAccounts, isFeedAccountAllowed, keepaliveDue, tickleAuthState, reloadFallbackReady, KEEPALIVE_INTERVAL_MS, KEEPALIVE_IDLE_RELOAD_MS };')(mod, mod.exports);
 const P = mod.exports;
 
 const H = ['Instrument', 'Position', 'Change %', 'Cost Basis', 'Market Value', 'Last', 'Avg Price', 'Daily P&L', 'Unrealized P&L', 'Delta', '52wk IV Rank', '52wk IV Pctl', 'P/E', 'Forward P/E', 'Beta', 'Market Cap', 'Social Sentiment Score', 'Social Sentiment Score Change'];
@@ -334,4 +334,36 @@ test('duplicate strike detection + CSV shape', () => {
   const csv = P.ordersToCsv([{ instrument: "ACME Nov20'26 35 Put", underlying: 'ACME', expiryISO: '2026-11-20', strike: 35, type: 'put', action: 'Buy', qty: 20, filled: 0, remain: 20, status: 'Submitted', statusDate: new Date('2026-10-12T09:30:00Z'), limitPrice: 4.65, tif: 'GTC', account: 'U00000000', orderId: '1' }], '2026-11-13T00:00:00.000Z');
   assert.ok(csv.startsWith('# generated-at: 2026-11-13'));
   assert.ok(csv.split('\n')[1].startsWith('instrument,underlying,expiry'));
+});
+
+test('keepalive: due logic is timestamp-based with a 4-minute cadence', () => {
+  const { keepaliveDue, KEEPALIVE_INTERVAL_MS } = P;
+  assert.equal(KEEPALIVE_INTERVAL_MS, 240000);
+  assert.equal(keepaliveDue({}, 1000000), true, 'first tickle due immediately');
+  assert.equal(keepaliveDue({ lastSuccessAt: 1000000 }, 1000000 + 239999), false, 'not due before 4 minutes');
+  assert.equal(keepaliveDue({ lastSuccessAt: 1000000 }, 1000000 + 240000), true, 'due at 4 minutes by timestamp, throttled timers cannot drift it');
+  assert.equal(keepaliveDue({ lastSuccessAt: 1000000, lost: true }, 1000000 + 9999999), false, 'a lost session never tickles again');
+});
+
+test('keepalive: tickle response classification tolerates shape drift', () => {
+  const { tickleAuthState } = P;
+  assert.equal(tickleAuthState(200, { iserver: { authStatus: { authenticated: true } } }), 'ok');
+  assert.equal(tickleAuthState(200, { iserver: { authStatus: { authenticated: false } } }), 'lost');
+  assert.equal(tickleAuthState(200, {}), 'ok-shape', 'HTTP 200 without the field counts as success, flagged');
+  assert.equal(tickleAuthState(200, null), 'ok-shape');
+  assert.equal(tickleAuthState(503, { iserver: { authStatus: { authenticated: true } } }), 'fail');
+  assert.equal(tickleAuthState(0, null), 'fail');
+});
+
+test('keepalive: reload fallback needs 2 failures, 10 idle minutes, no ticket, no modal, once', () => {
+  const { reloadFallbackReady } = P;
+  const base = { failures: 2, lastActivityAt: 0, lost: false, fallbackUsed: false };
+  const open = { ticketOpen: false, modalOpen: false };
+  assert.equal(reloadFallbackReady(base, 600000, open), true);
+  assert.equal(reloadFallbackReady({ ...base, failures: 1 }, 600000, open), false, 'one failure never reloads');
+  assert.equal(reloadFallbackReady(base, 599999, open), false, 'under 10 idle minutes never reloads');
+  assert.equal(reloadFallbackReady(base, 600000, { ticketOpen: true, modalOpen: false }), false, 'open ticket blocks');
+  assert.equal(reloadFallbackReady(base, 600000, { ticketOpen: false, modalOpen: true }), false, 'open modal blocks');
+  assert.equal(reloadFallbackReady({ ...base, fallbackUsed: true }, 600000, open), false, 'once per idle period');
+  assert.equal(reloadFallbackReady({ ...base, lost: true }, 600000, open), false, 'a lost session never reloads');
 });

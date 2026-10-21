@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-21 (v0.10.0)
+
+- IBKR Enhancer session keepalive ("Keep IBKR session alive", default
+  on): a same-origin `fetch` POST to `/v1/api/tickle` every 4 minutes
+  (timestamp-driven, first tickle within the first minute) resets the
+  portal's inactivity timer. `iserver.authStatus.authenticated: false`
+  stops the keepalive and the gear panel reads "session lost — log in
+  again". Two consecutive tickle failures fall back to one page reload
+  per idle period, only with 10+ idle minutes and no open order ticket
+  or visible modal. One quiet gear-panel status line; never a toast.
+  This is the enhancer's only page-origin network call; it targets the
+  inactivity logout only — IBKR's absolute session expiry and
+  competing sessions (mobile/TWS) still force re-login.
+
 ## 2026-10-21 (v0.9.1)
 
 - IBKR Enhancer feed allowlist: new gear-panel setting "Feed accounts
