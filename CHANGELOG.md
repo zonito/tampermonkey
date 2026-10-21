@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-21 (v0.3.0) — Phase 2B
+
+- IBKR Enhancer wing pairing: greedy quantity-consuming match of long
+  options to shorts (nearest expiry, then strike), PAIRED / PARTIAL /
+  ORPHAN chips (amber orphan-exit variant), WINGED markers on covered
+  shorts. Unit tests + jsdom gate (independent orphan recomputation).
+
 ## 2026-10-21 (v0.2.0) — Phase 2A
 
 - IBKR Enhancer cross-reference: open orders snapshot saved from the Orders

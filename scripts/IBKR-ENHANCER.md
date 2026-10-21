@@ -120,7 +120,19 @@ captured is >= 60%). Tooltips show the matched limit, remain, 60% target and
 snapshot time; chips grey out when the snapshot is older than 24 hours. New
 settings toggle: "GTC closing-order chips". No new grants.
 
+## Phase 2B: wing pairing (v0.3.0)
+
+For every long option, shorts on the same page are matched greedily
+(nearest expiry, then nearest strike) subject to: same underlying and type,
+puts long strike < short strike, calls long strike > short strike, long
+expiry >= short expiry. Quantities are consumed, so one short cannot
+validate two wings beyond its quantity. Long rows get PAIRED (muted),
+PARTIAL (amber) or ORPHAN (red; amber "Orphan, exit working" when the
+orders snapshot holds a working Sell exit for it). Covered shorts get a
+small WINGED marker beside their GTC chip. Pure function `wingPairState`.
+New settings toggle: "Wing pairing chips".
+
 ## Phase 2 candidates (not built)
 
-Wing pairing, DTE/expiry-week digest, per-underlying P&L history from
-repeated CSV copies.
+DTE/expiry-week digest, per-underlying P&L history from repeated CSV
+copies.

@@ -14,7 +14,7 @@ assert.ok(start >= 0 && end > start, 'parser markers present');
 const parserSrc = src.slice(start, end);
 const mod = { exports: {} };
 // The parser block references `module` only via the guard below it; evaluate block + export line.
-new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, positionsToCsv, ordersToCsv };')(mod, mod.exports);
+new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, positionsToCsv, ordersToCsv };')(mod, mod.exports);
 const P = mod.exports;
 
 const H = ['Instrument', 'Position', 'Change %', 'Cost Basis', 'Market Value', 'Last', 'Avg Price', 'Daily P&L', 'Unrealized P&L', 'Delta', '52wk IV Rank', '52wk IV Pctl', 'P/E', 'Forward P/E', 'Beta', 'Market Cap', 'Social Sentiment Score', 'Social Sentiment Score Change'];
@@ -159,6 +159,34 @@ test('GTC chips: green / amber / red + escalation + stale + snapshot keeps open 
     { ...short, action: 'Buy', status: 'Cancelled', limitPrice: 0.8, remain: 2, orderId: '2' },
   ], now.toISOString());
   assert.equal(snap.orders.length, 1); assert.equal(snap.orders[0].orderId, '1');
+});
+
+test('wing pairing: paired, partial, orphan, orphan-exit, quantity consumption', () => {
+  const put = (qty, strike, exp) => ({ underlying: 'AXTI', type: 'put', qty, strike, expiryISO: exp });
+  // paired: long put 30 < short put 35, same expiry
+  let w = P.wingPairState([put(2, 30, '2026-11-20'), put(-2, 35, '2026-11-20')], null);
+  assert.equal(w.byIndex[0].state, 'paired'); assert.deepEqual(w.wingedShorts, [1]);
+  // partial: wing qty 3, short only 2
+  w = P.wingPairState([put(3, 30, '2026-11-20'), put(-2, 35, '2026-11-20')], null);
+  assert.equal(w.byIndex[0].state, 'partial'); assert.equal(w.byIndex[0].coveredQty, 2);
+  // orphan: long strike above short strike for puts does not pair
+  w = P.wingPairState([put(1, 40, '2026-11-20'), put(-1, 35, '2026-11-20')], null);
+  assert.equal(w.byIndex[0].state, 'orphan');
+  // orphan with working Sell exit order in snapshot
+  const snap = { savedAt: '2026-11-13T00:00:00Z', orders: [{ underlying: 'AXTI', expiryISO: '2026-11-20', strike: 40, type: 'put', action: 'Sell', limitPrice: 1, remain: 1, status: 'Submitted' }] };
+  w = P.wingPairState([put(1, 40, '2026-11-20'), put(-1, 35, '2026-11-20')], snap);
+  assert.equal(w.byIndex[0].state, 'orphan-exit');
+  // quantity consumption: one short of 1 cannot validate two wings
+  w = P.wingPairState([put(1, 30, '2026-11-20'), put(1, 28, '2026-11-20'), put(-1, 35, '2026-11-20')], null);
+  assert.equal(w.byIndex[0].state, 'paired');
+  assert.equal(w.byIndex[1].state, 'orphan');
+  // calls mirror: long strike > short strike
+  const call = (qty, strike, exp) => ({ underlying: 'AXTI', type: 'call', qty, strike, expiryISO: exp });
+  w = P.wingPairState([call(1, 60, '2026-11-20'), call(-1, 50, '2026-11-20')], null);
+  assert.equal(w.byIndex[0].state, 'paired');
+  // nearest expiry preferred: long Dec, shorts Nov (invalid, earlier) and Dec
+  w = P.wingPairState([put(1, 30, '2026-12-18'), put(-1, 35, '2026-11-20'), put(-1, 36, '2026-12-18')], null);
+  assert.equal(w.byIndex[0].pairs[0].shortIndex, 2);
 });
 
 test('duplicate strike detection + CSV shape', () => {

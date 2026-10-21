@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.2.0
+// @version      0.3.0
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -245,6 +245,47 @@
     var green = target !== null && match.limitPrice !== null && match.limitPrice !== undefined && match.limitPrice <= target;
     return { state: green ? 'green' : 'amber', pct: pct, order: match, stale: stale, escalated: false, target: target, snapshotAt: savedAt };
   }
+  function wingPairState(positions, snapshot) {
+    var rows = positions || [];
+    var pool = {};
+    rows.forEach(function (r, i) {
+      if (r && r.type !== 'equity' && r.qty !== null && r.qty !== undefined && r.qty < 0) pool[i] = Math.abs(r.qty);
+    });
+    var snapOrders = (snapshot && snapshot.orders) || [];
+    var byIndex = {}, winged = {};
+    function expiryMs(r) { return r.expiryISO ? Date.parse(r.expiryISO + 'T00:00:00Z') : (r.expiry ? new Date(r.expiry).getTime() : NaN); }
+    rows.forEach(function (r, i) {
+      if (!r || r.type === 'equity' || r.qty === null || r.qty === undefined || r.qty <= 0) return;
+      var candidates = [];
+      rows.forEach(function (s, j) {
+        if (!pool[j]) return;
+        if (s.underlying !== r.underlying || s.type !== r.type) return;
+        if (r.type === 'put' && !(r.strike < s.strike)) return;
+        if (r.type === 'call' && !(r.strike > s.strike)) return;
+        var le = expiryMs(r), se = expiryMs(s);
+        if (isFinite(le) && isFinite(se) && le < se) return;
+        candidates.push({ idx: j, expiryDist: (isFinite(le) && isFinite(se)) ? Math.abs(le - se) : 0, strikeDist: Math.abs(r.strike - s.strike) });
+      });
+      candidates.sort(function (a, b) { return (a.expiryDist - b.expiryDist) || (a.strikeDist - b.strikeDist); });
+      var need = r.qty, pairs = [];
+      candidates.forEach(function (c) {
+        if (need <= 0) return;
+        var take = Math.min(need, pool[c.idx]);
+        if (take > 0) { pool[c.idx] -= take; need -= take; pairs.push({ shortIndex: c.idx, qty: take }); winged[c.idx] = true; }
+      });
+      var covered = r.qty - need;
+      var state = covered >= r.qty ? 'paired' : (covered > 0 ? 'partial' : 'orphan');
+      var hasExit = false;
+      if (state === 'orphan') {
+        hasExit = snapOrders.some(function (o) {
+          return o && o.action === 'Sell' && o.underlying === r.underlying && o.expiryISO === r.expiryISO && o.strike === r.strike && o.type === r.type;
+        });
+        if (hasExit) state = 'orphan-exit';
+      }
+      byIndex[i] = { state: state, coveredQty: covered, neededQty: r.qty, pairs: pairs, hasExitOrder: hasExit };
+    });
+    return { byIndex: byIndex, wingedShorts: Object.keys(winged).map(Number) };
+  }
   function defaultFilterState(kind) {
     return kind === 'positions'
       ? { text: '', typeSeg: 'all', expirySeg: 'any', itmOnly: false }
@@ -327,13 +368,13 @@
     remainingNotional: remainingNotional, duplicateOrderKeys: duplicateOrderKeys, orderKey: orderKey,
     isTerminalStatus: isTerminalStatus, isOpenOrder: isOpenOrder, summarizeOrders: summarizeOrders,
     defaultFilterState: defaultFilterState, filterIsActive: filterIsActive, matchesRowFilters: matchesRowFilters,
-    buildOrdersSnapshot: buildOrdersSnapshot, gtcTargetLimit: gtcTargetLimit, gtcChipState: gtcChipState,
+    buildOrdersSnapshot: buildOrdersSnapshot, gtcTargetLimit: gtcTargetLimit, gtcChipState: gtcChipState, wingPairState: wingPairState,
     positionsToCsv: positionsToCsv, ordersToCsv: ordersToCsv };
   if (typeof module !== 'undefined' && module.exports) module.exports = PARSER;
 
   // ---------- settings ----------
   var DEFAULTS = { marginBar: true, badges: true, grouping: false, filters: true, orderAges: true,
-    copyButtons: true, readability: true, gtcChips: true, density: 'comfortable', dismissedBar: false };
+    copyButtons: true, readability: true, gtcChips: true, wingChips: true, density: 'comfortable', dismissedBar: false };
   function getSetting(key) {
     try { if (typeof GM_getValue === 'function') { var v = GM_getValue('ibx.' + key, undefined); if (v !== undefined) return v; } } catch (e) { /* silent */ }
     try { var raw = window.localStorage.getItem('ibx.' + key); return raw === null ? DEFAULTS[key] : JSON.parse(raw); } catch (e) { return DEFAULTS[key]; }
@@ -344,7 +385,7 @@
   }
   function allOff() {
     return !getSetting('marginBar') && !getSetting('badges') && !getSetting('grouping') &&
-      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips');
+      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips') && !getSetting('wingChips');
   }
 
   var CSS = [
@@ -590,7 +631,7 @@
     var title = el('div', '', 'IBKR Enhancer settings'); title.style.fontWeight = '700'; panel.appendChild(title);
     [['marginBar', 'Margin bar'], ['badges', 'Positions badges'], ['grouping', 'Group by underlying'],
      ['filters', 'Filter bars'], ['orderAges', 'Order age / notional'], ['copyButtons', 'Copy CSV buttons'],
-     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips']].forEach(function (pairDef) {
+     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips'], ['wingChips', 'Wing pairing chips']].forEach(function (pairDef) {
       var row = el('label'); row.style.display = 'block';
       var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!getSetting(pairDef[0]);
       cb.setAttribute('data-ibkr-enhancer', '1');
@@ -675,6 +716,28 @@
             ' | 60% target \u2264 ' + (chip.target !== null && chip.target !== undefined ? chip.target : 'n/a') +
             ' | Snapshot: ' + snapTxt + (chip.stale ? ' (stale >24h)' : ''));
         }
+      });
+    }
+    if (getSetting('wingChips')) {
+      var wingSnap = null;
+      try { wingSnap = getSetting('ordersSnapshot') || null; } catch (e) { wingSnap = null; }
+      var wing = wingPairState(rows, wingSnap);
+      Object.keys(wing.byIndex).forEach(function (k) {
+        var r = rows[Number(k)], info = wing.byIndex[k];
+        var cell = instrumentCell(r._tr, found.headers);
+        if (info.state === 'paired') {
+          var desc = info.pairs.map(function (p) { var s = rows[p.shortIndex]; return 'Wing \u2192 ' + s.underlying + ' ' + (s.expiryISO || '') + ' ' + s.strike + ' ' + s.type + ' \u00D7' + p.qty; }).join('; ');
+          addBadge(cell, 'PAIRED', 'ibx-badge-muted', desc);
+        } else if (info.state === 'partial') {
+          addBadge(cell, 'PARTIAL', 'ibx-badge-amber', 'Wing covers ' + info.coveredQty + ' of ' + info.neededQty);
+        } else if (info.state === 'orphan-exit') {
+          addBadge(cell, 'Orphan, exit working', 'ibx-badge-amber', 'No matching short; a working Sell exit order exists in the orders snapshot.');
+        } else {
+          addBadge(cell, 'ORPHAN', 'ibx-badge-red', 'No matching short, hedge is gone, review for close.');
+        }
+      });
+      wing.wingedShorts.forEach(function (idx) {
+        addBadge(instrumentCell(rows[idx]._tr, found.headers), 'WINGED', 'ibx-badge-muted', 'This short has at least one paired long wing.');
       });
     }
     if (getSetting('grouping')) applyGrouping(found, rows);
