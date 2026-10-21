@@ -11,10 +11,14 @@ CSV to the clipboard only.
 
 ## What it does
 
-- **Sticky margin bar** (both pages, when the account panel is present): NLV
-  (account-header headline value), Excess Liquidity, Buying Power, Maintenance
-  Margin, Unrealized P&L, plus cushion % = Excess Liquidity / NLV (green
-  > 20%, amber 10–20%, red < 10%). Displays the account alias it read.
+- **Sticky margin bar** (both pages, when the account panel is present):
+  compact bar with account alias, NLV and a prominent colour-coded Cushion
+  pill (green > 20%, amber 10–20%, red < 10%; dash when the headline is
+  unresolved), plus Details, gear and close buttons. Details toggles an
+  overlay above the bar with alias + masked ID, large cushion, and a
+  two-column table of all anchor fields (NLV, Excess Liquidity, Buying
+  Power, Maintenance Margin, Unrealized/Realized P&L, Settled Cash when
+  present); it closes on toggle, its Close button, or an outside click.
   Fail-safe: the headline is anchored on the sidebar account item (the
   largest label ancestor, up to 25 levels, still containing exactly one
   account-ID token; 2+ IDs is the multi-account column and is rejected).

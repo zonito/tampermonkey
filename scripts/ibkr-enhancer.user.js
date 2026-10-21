@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.4.1
+// @version      0.5.0
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -415,6 +415,11 @@
     '.ibx-bar{position:fixed;bottom:12px;right:12px;z-index:9999;display:flex;gap:10px;align-items:center;flex-wrap:wrap;max-width:92vw;padding:6px 10px;border-radius:8px;background:rgba(20,22,28,.94);color:#e8e8e8;border:1px solid rgba(255,255,255,.18);font:12px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 4px 18px rgba(0,0,0,.4)}',
     '.ibx-bar .ibx-lab{opacity:.65}.ibx-bar .ibx-val{font-weight:600}',
     '.ibx-cushion-green{color:#4caf50}.ibx-cushion-amber{color:#ffb300}.ibx-cushion-red{color:#ef5350}',
+    '.ibx-pill-cushion{border-radius:999px;padding:2px 10px;font-weight:800;color:#111}',
+    '.ibx-pill-cushion.ibx-cushion-green{background:#43a047;color:#fff}.ibx-pill-cushion.ibx-cushion-amber{background:#ffb300;color:#222}.ibx-pill-cushion.ibx-cushion-red{background:#c62828;color:#fff}.ibx-pill-cushion.ibx-cushion-none{background:#444;color:#bbb}',
+    '.ibx-details{position:fixed;bottom:64px;right:12px;z-index:10001;min-width:300px;background:rgba(20,22,28,.97);color:#e8e8e8;border:1px solid rgba(255,255,255,.2);border-radius:10px;padding:12px 14px;font:12px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.5)}',
+    '.ibx-details table{border-collapse:collapse;width:100%}.ibx-details td{padding:2px 6px}.ibx-details td:last-child{text-align:right;font-weight:600}',
+    '.ibx-details-cushion{font-size:22px;font-weight:800}',
     '.ibx-badge{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font-size:10px;font-weight:700;vertical-align:middle}',
     '.ibx-badge-red{background:#5a1f1f;color:#ff8a80}.ibx-badge-amber{background:#554410;color:#ffd54f}.ibx-badge-green{background:#1e4620;color:#81c784}.ibx-badge-muted{background:#333;color:#bbb;font-weight:400}',
     '.ibx-badge-escalated{background:#8e0000;color:#fff;box-shadow:0 0 0 1px #ff5252 inset}',
@@ -556,6 +561,13 @@
     }
     var fields = {};
     labels.forEach(function (lab) { fields[lab] = labelledValue(lab); });
+    ['Realized P&L', 'Settled Cash'].forEach(function (lab) {
+      var found = null;
+      Array.prototype.forEach.call(main.querySelectorAll('div,span,td,li'), function (el2) {
+        if (!found && (el2.textContent || '').trim() === lab) found = el2;
+      });
+      if (found) { labelEls[lab] = found; fields[lab] = labelledValue(lab); }
+    });
     // Headline anchor: the sidebar account item = largest ancestor of the
     // summary labels (up to 25 levels) still containing exactly one
     // account-ID token; 2+ IDs means the multi-account column, reject it.
@@ -586,20 +598,32 @@
         maskedId = idTok.charAt(0) + '\u2022\u2022\u2022' + idTok.slice(-2);
         var afterId = header.slice(idIdx + idTok.length);
         var curM = afterId.match(/(USD|GBP|EUR)/);
-        var signed = /[+-][\d,]+(?:\.\d+)?/.test(afterId);
-        dbg.currency = !!curM; dbg.signed = signed;
-        dbg.reason = !curM ? 'NO_CURRENCY' : (!signed ? 'NO_SIGNED' : 'NO_MONEY');
-        if (curM && signed) {
-          var afterCur = afterId.slice(curM.index + curM[1].length);
-          var money = afterCur.match(/[+-]?[\d,]+(?:\.\d{2})/);
-          if (money) {
-            dbg.money = true; dbg.moneyShape = money[0].replace(/\d/g, '#');
-            var candidate = parseNumber(money[0]);
-            var clashes = Object.keys(fields).some(function (k) { return fields[k] !== null && candidate === fields[k]; });
-            dbg.clash = clashes;
-            if (!clashes) { headline = candidate; dbg.reason = 'OK'; } else dbg.reason = 'CLASH';
+        dbg.currency = !!curM;
+        dbg.signed = /[+-][\d,]+(?:\.\d+)?/.test(afterId);
+        dbg.reason = !curM ? 'NO_CURRENCY' : 'NO_MONEY';
+        // Money is evaluated independently of the signed gate; signed is
+        // confidence only. Candidates clashing with a labelled field are
+        // skipped, in the header segment first, then the full item text.
+        function scanMoney(text) {
+          var curRe = /(USD|GBP|EUR)/g, cm;
+          while ((cm = curRe.exec(text)) !== null) {
+            var rest = text.slice(cm.index + cm[1].length);
+            var mm = rest.match(/[+-]?[\d,]+(?:\.\d{2})/);
+            if (!mm) continue;
+            var cand = parseNumber(mm[0]);
+            var clash = Object.keys(fields).some(function (k) { return fields[k] !== null && cand === fields[k]; });
+            dbg.money = true; dbg.moneyShape = mm[0].replace(/\d/g, '#'); dbg.clash = clash;
+            if (!clash) return cand;
           }
+          return null;
         }
+        if (curM) headline = scanMoney(afterId);
+        if (headline === null) {
+          var fullAfter = fullText.slice(fullText.lastIndexOf(idTok) + idTok.length);
+          headline = scanMoney(fullAfter);
+          if (headline !== null) dbg.currency = true;
+        }
+        dbg.reason = headline !== null ? 'OK' : (dbg.money ? 'CLASH' : (curM ? 'NO_MONEY' : 'NO_CURRENCY'));
         var beforeId = header.slice(0, idIdx);
         var aliasM = beforeId.match(/([A-Za-z][A-Za-z'-]{1,})\s*$/);
         alias = aliasM ? aliasM[1] : maskedId;
@@ -639,23 +663,49 @@
     }
     bar.appendChild(pair('Account', ctx.alias || ctx.maskedId || EM_DASH));
     bar.appendChild(pair('NLV', fmtMoney(ctx.headline)));
-    bar.appendChild(pair('Excess Liq', fmtMoney(ctx.fields['Excess Liquidity'])));
-    bar.appendChild(pair('Buying Power', fmtMoney(ctx.fields['Buying Power'])));
-    bar.appendChild(pair('Maint Margin', fmtMoney(ctx.fields['Maintenance Margin'])));
-    bar.appendChild(pair('Unreal. P&L', fmtMoney(ctx.fields['Unrealized P&L'])));
     var cushion = cushionPct(ctx.fields['Excess Liquidity'], ctx.headline);
     var band = cushionBand(cushion);
-    if (cushion !== null && band) {
-      var c = pair('Cushion', cushion.toFixed(1) + '%');
-      c.querySelector('.ibx-val').className = 'ibx-val ibx-cushion-' + band;
-      bar.appendChild(c);
-    }
+    var pill = el('span', 'ibx-pill-cushion ibx-cushion-' + (band || 'none'), cushion !== null && band ? cushion.toFixed(1) + '%' : EM_DASH);
+    pill.title = 'Cushion = Excess Liquidity / NLV';
+    bar.appendChild(pill);
+    var details = el('button', '', 'Details');
+    details.addEventListener('click', function (ev) { ev.stopPropagation(); toggleDetails(ctx, cushion, band); });
     var gear = el('button', '', '\u2699'); gear.title = 'IBKR Enhancer settings';
     gear.addEventListener('click', togglePanel);
     var close = el('button', '', '\u00D7'); close.title = 'Dismiss (re-enable in settings)';
-    close.addEventListener('click', function () { setSetting('dismissedBar', true); bar.remove(); });
-    bar.appendChild(gear); bar.appendChild(close);
+    close.addEventListener('click', function () { setSetting('dismissedBar', true); removeInjected('[data-ibkr-enhancer="details"]'); bar.remove(); });
+    bar.appendChild(details); bar.appendChild(gear); bar.appendChild(close);
     document.body.appendChild(bar);
+  }
+
+  var detailsOutsideHandler = null;
+  function toggleDetails(ctx, cushion, band) {
+    var existing = document.querySelector('[data-ibkr-enhancer="details"]');
+    if (existing) { existing.remove(); if (detailsOutsideHandler) { document.removeEventListener('click', detailsOutsideHandler); detailsOutsideHandler = null; } return; }
+    var panel = el('div', 'ibx-details'); panel.setAttribute('data-ibkr-enhancer', 'details');
+    var head = el('div', '', (ctx.alias || ctx.maskedId || 'Account') + (ctx.maskedId && ctx.alias ? '  ' + ctx.maskedId : ''));
+    head.style.fontWeight = '700'; panel.appendChild(head);
+    var big = el('div', 'ibx-details-cushion ibx-cushion-' + (band || 'none'), cushion !== null && band ? cushion.toFixed(1) + '%' : EM_DASH);
+    big.title = 'Cushion = Excess Liquidity / NLV';
+    panel.appendChild(big);
+    var table = document.createElement('table'); table.setAttribute('data-ibkr-enhancer', '1');
+    [['NLV', ctx.headline], ['Excess Liquidity', ctx.fields['Excess Liquidity']], ['Buying Power', ctx.fields['Buying Power']],
+     ['Maintenance Margin', ctx.fields['Maintenance Margin']], ['Unrealized P&L', ctx.fields['Unrealized P&L']],
+     ['Realized P&L', ctx.fields['Realized P&L']], ['Settled Cash', ctx.fields['Settled Cash']]].forEach(function (rowDef) {
+      if (rowDef[0] !== 'NLV' && (rowDef[1] === null || rowDef[1] === undefined)) return;
+      var tr = document.createElement('tr'); tr.setAttribute('data-ibkr-enhancer', '1');
+      var a = el('td', '', rowDef[0]); var b = el('td', '', fmtMoney(rowDef[1]));
+      tr.appendChild(a); tr.appendChild(b); table.appendChild(tr);
+    });
+    panel.appendChild(table);
+    var closeBtn = el('button', '', 'Close');
+    closeBtn.addEventListener('click', function () { toggleDetails(ctx, cushion, band); });
+    panel.appendChild(closeBtn);
+    document.body.appendChild(panel);
+    detailsOutsideHandler = function (ev) {
+      if (!panel.contains(ev.target)) toggleDetails(ctx, cushion, band);
+    };
+    document.addEventListener('click', detailsOutsideHandler);
   }
 
   function togglePanel() {

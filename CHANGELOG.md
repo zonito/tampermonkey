@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-21 (v0.5.0)
+
+- IBKR Enhancer: anchor accepts ID + currency + non-clashing money without
+  the signed gate (signed is confidence only), with a fallback scan of the
+  account item's full text after the ID skipping clashing candidates.
+- Margin bar redesigned: compact alias / NLV / cushion pill, Details
+  overlay with masked ID, large cushion and the full field table.
+
 ## 2026-10-21 (v0.4.1)
 
 - IBKR Enhancer fix: filter state hoisted to module level per table kind
