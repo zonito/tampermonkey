@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.1.5
+// @version      0.1.6
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -323,7 +323,11 @@
     '.ibx-badge{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font-size:10px;font-weight:700;vertical-align:middle}',
     '.ibx-badge-red{background:#5a1f1f;color:#ff8a80}.ibx-badge-amber{background:#554410;color:#ffd54f}.ibx-badge-green{background:#1e4620;color:#81c784}.ibx-badge-muted{background:#333;color:#bbb;font-weight:400}',
     '.ibx-filterbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 4px;font:12px -apple-system,Segoe UI,Roboto,sans-serif}',
-    '.ibx-filterbar input[type=text]{min-width:180px;padding:4px 8px;border-radius:6px}',
+    '.ibx-filterbar input[type=text]{min-width:180px;height:26px;padding:3px 12px;border-radius:999px;background:rgba(20,22,28,.92);color:#e8e8e8;border:1px solid rgba(128,128,128,.55)}',
+    '.ibx-filterbar input[type=text]::placeholder{color:rgba(200,200,200,.55)}',
+    '.ibx-filterbar input[type=text]:focus{border-color:#0b5cad;outline:none}',
+    '.ibx-copy{display:inline-flex;gap:6px;align-items:center;margin:4px;border:1px solid rgba(128,128,128,.55);background:transparent;color:inherit;border-radius:999px;padding:3px 10px;cursor:pointer;transition:transform .12s ease}',
+    '.ibx-copy:hover{transform:translateY(-1px)}',
     '.ibx-filterbar button,.ibx-bar button{cursor:pointer;border-radius:6px;padding:3px 8px}',
     '.ibx-flabel{opacity:.6;font-weight:600}',
     '.ibx-seg{display:inline-flex;border:1px solid rgba(128,128,128,.55);border-radius:999px;overflow:hidden}',
@@ -731,11 +735,17 @@
 
   function renderCopyButton(found, makeCsv, label) {
     if (found.table.parentElement && found.table.parentElement.querySelector('[data-ibkr-enhancer="copy"]')) return;
-    var b = el('button', '', label); b.setAttribute('data-ibkr-enhancer', 'copy');
+    var b = el('button', 'ibx-pill ibx-copy'); b.setAttribute('data-ibkr-enhancer', 'copy');
+    b.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span></span>';
+    var span = b.querySelector('span'); span.textContent = label;
+    var revertTimer = null;
     b.addEventListener('click', function () {
       var csv = makeCsv();
       try { navigator.clipboard.writeText(csv).then(function () { log('copied CSV (' + csv.split('\n').length + ' lines)'); }); }
       catch (e) { log('clipboard failed', e && e.message); }
+      span.textContent = 'Copied \u2713';
+      if (revertTimer) clearTimeout(revertTimer);
+      revertTimer = setTimeout(function () { span.textContent = label; }, 1500);
     });
     if (found.table.parentElement) found.table.parentElement.insertBefore(b, found.table);
   }

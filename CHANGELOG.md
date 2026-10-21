@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-21 (v0.1.6)
+
+- IBKR Enhancer cosmetics: filter search input styled to the pill system
+  (dark surface, fully rounded, accent focus border); copy buttons become
+  pills with a clipboard icon, hover lift and a 1.5s "Copied" label flip.
+
 ## 2026-10-21 (v0.1.5)
 
 - IBKR Enhancer diagnostics: "Copy anchor debug" button in the settings
