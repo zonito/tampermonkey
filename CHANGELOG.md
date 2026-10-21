@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-21 (v0.4.1)
+
+- IBKR Enhancer fix: filter state hoisted to module level per table kind
+  and re-applied to the current row set at the end of every run, so active
+  filters hold across native Refresh and price-tick re-renders; rebuilt
+  bars render from the persisted state. jsdom refresh regression gate on
+  both fixtures.
+
 ## 2026-10-21 (v0.4.0) — Phase 2C
 
 - IBKR Enhancer covered-call chips on equity rows: capacity floor(shares/100)

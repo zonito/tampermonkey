@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.4.0
+// @version      0.4.1
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -706,6 +706,7 @@
 
   function enhancePositions(found) {
     var rows = readPositions(found);
+    liveRows.positions = rows;
     var visible = dataRows(found).length;
     log('positions parsed ' + rows.length + ' / visible ' + visible);
     var equityLast = {};
@@ -821,6 +822,17 @@
 
   function rowMatchesFilters(r, kind, state) { return matchesRowFilters(r, kind, state); }
 
+  var filterStates = { positions: null, orders: null };
+  var liveRows = { positions: [], orders: [] };
+  function getFilterState(kind) {
+    if (!filterStates[kind]) filterStates[kind] = defaultFilterState(kind);
+    return filterStates[kind];
+  }
+  function applyFilterToRows(kind) {
+    var state = getFilterState(kind);
+    if (!filterIsActive(state, kind)) return;
+    (liveRows[kind] || []).forEach(function (r) { r._tr.style.display = matchesRowFilters(r, kind, state) ? '' : 'none'; });
+  }
   var activeFilterInput = null;
   var slashBound = false;
   function ensureSlashListener() {
@@ -847,7 +859,8 @@
     var input = document.createElement('input'); input.type = 'text'; input.placeholder = 'Filter instrument / underlying ( / )';
     input.setAttribute('data-ibkr-enhancer', '1');
     bar.appendChild(input);
-    var state = defaultFilterState(kind);
+    var state = getFilterState(kind);
+    input.value = state.text || '';
     var refreshers = [];
     function paintBtn(b, on, label) {
       b.classList.toggle('ibx-on', !!on);
@@ -882,16 +895,17 @@
     var clear = el('button', 'ibx-clear', 'Clear all');
     clear.style.display = 'none';
     clear.addEventListener('click', function () {
-      state = defaultFilterState(kind);
+      filterStates[kind] = defaultFilterState(kind);
+      state = filterStates[kind];
       input.value = '';
-      rows.forEach(function (r) { r._tr.style.display = ''; });
+      (liveRows[kind] || []).forEach(function (r) { r._tr.style.display = ''; });
       refresh();
     });
     bar.appendChild(clear);
     function syncClear() { clear.style.display = filterIsActive(state, kind) ? '' : 'none'; }
     function apply() {
       state.text = input.value.trim().toLowerCase();
-      rows.forEach(function (r) { r._tr.style.display = rowMatchesFilters(r, kind, state) ? '' : 'none'; });
+      (liveRows[kind] || []).forEach(function (r) { r._tr.style.display = rowMatchesFilters(r, kind, state) ? '' : 'none'; });
       syncClear();
     }
     input.addEventListener('input', apply);
@@ -929,6 +943,7 @@
 
   function enhanceOrders(found) {
     var rows = readOrders(found);
+    liveRows.orders = rows;
     var visible = dataRows(found).length;
     log('orders parsed ' + rows.length + ' / visible ' + visible);
     var dupes = duplicateOrderKeys(rows);
@@ -982,6 +997,8 @@
       renderMarginBar(findAccountContext());
       if (found.positions) enhancePositions(found.positions);
       if (found.orders) enhanceOrders(found.orders);
+      if (found.positions) applyFilterToRows('positions');
+      if (found.orders) applyFilterToRows('orders');
       if (!found.positions) removeInjected('[data-ibkr-enhancer="panel"]');
     } catch (e) { log('run failed (silent in UI)', e && e.message); }
     finally { running = false; if (queued) { queued = false; scheduleRun(); } }
