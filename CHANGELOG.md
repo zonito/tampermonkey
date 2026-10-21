@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-21 (v0.8.0)
+
+- IBKR Enhancer Kubera export (Orders page, default off): stable-count
+  auto-export plus "Export now", one snapshot per account grouped by the
+  Account column, terminal orders excluded, Europe/London `captured_at`,
+  pager-aware `complete` flag, one-line diff feedback, GM-queued retry.
+  Transport is `GM_xmlhttpRequest` to local Kubera only; the ingest token
+  is a gear-panel setting, never hard-coded.
+- Riders: CSV buttons flip to "Copied" only on clipboard success ("Copy
+  failed" on rejection); ticket immediate-fill warning reads the ticket's
+  `.ask-price` element first with the text match as fallback.
+
 ## 2026-10-21 (v0.7.1)
 
 - IBKR Enhancer: ticket summary's immediate-fill warning now reads the

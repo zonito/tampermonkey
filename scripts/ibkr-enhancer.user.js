@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.7.1
-// @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
+// @version      0.8.0
+// @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders. Optional: exports open orders to local Kubera only.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
 // @match        https://www.interactivebrokers.com/portal/*
@@ -10,6 +10,9 @@
 // @grant        GM_addStyle
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_xmlhttpRequest
+// @connect      127.0.0.1
+// @connect      localhost
 // ==/UserScript==
 
 (function () {
@@ -425,6 +428,84 @@
     });
     return lines.join('\n');
   }
+
+  // ---- Kubera broker-orders export (pure payload builders) ----
+  function londonOffsetMinutes(instant) {
+    var d = instant ? new Date(instant) : new Date();
+    try {
+      var parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false }).formatToParts(d);
+      var v = {};
+      parts.forEach(function (p) { v[p.type] = Number(p.value); });
+      var wallAsUTC = Date.UTC(v.year, v.month - 1, v.day, v.hour % 24, v.minute, v.second);
+      return Math.round((wallAsUTC - Math.floor(d.getTime() / 1000) * 1000) / 60000);
+    } catch (e) { return -d.getTimezoneOffset(); }
+  }
+  function formatLondonCapturedAt(instant) {
+    var d = instant ? new Date(instant) : new Date();
+    var off = londonOffsetMinutes(d);
+    var shifted = new Date(d.getTime() + off * 60000);
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    var sign = off < 0 ? '-' : '+';
+    var abs = Math.abs(off);
+    return shifted.getUTCFullYear() + '-' + pad(shifted.getUTCMonth() + 1) + '-' + pad(shifted.getUTCDate()) +
+      'T' + pad(shifted.getUTCHours()) + ':' + pad(shifted.getUTCMinutes()) + ':' + pad(shifted.getUTCSeconds()) +
+      sign + pad(Math.floor(abs / 60)) + ':' + pad(abs % 60);
+  }
+  function currencyFromText(text) {
+    var m = String(text || '').match(/\b(USD|GBP|EUR|CHF|CAD|AUD)\b/);
+    return m ? m[1] : null;
+  }
+  function brokerOrderFromParsed(row, raw) {
+    var pageText = raw !== undefined ? String(raw || '') : String(row.instrument || '');
+    var isEquity = row.type === 'equity';
+    return {
+      order_id: row.orderId ? String(row.orderId) : '',
+      symbol: row.underlying || '',
+      asset_type: isEquity ? 'equity' : 'option',
+      expiry_date: isEquity ? null : (row.expiryISO || null),
+      strike_price: isEquity ? null : (row.strike !== undefined ? row.strike : null),
+      option_type: isEquity ? null : (row.type === 'put' ? 'Put' : (row.type === 'call' ? 'Call' : null)),
+      action: row.action || '',
+      qty_total: (row.qty !== null && row.qty !== undefined) ? row.qty : ((row.filled || 0) + (row.remain || 0)),
+      qty_filled: row.filled !== undefined ? row.filled : 0,
+      qty_remain: row.remain !== undefined ? row.remain : 0,
+      limit_price: row.limitPrice !== undefined ? row.limitPrice : null,
+      tif: row.tif || null,
+      status: row.status || '',
+      status_at: row.statusDate ? new Date(row.statusDate).toISOString() : null,
+      currency: currencyFromText(pageText) || 'USD',
+      raw: pageText,
+      legs: Array.isArray(row.legs) ? row.legs : []
+    };
+  }
+  function exportedOrdersComplete(renderedCount, totalHint) {
+    if (totalHint === null || totalHint === undefined || !isFinite(totalHint)) return true;
+    return !(totalHint > renderedCount);
+  }
+  function buildBrokerSnapshots(rows, opts) {
+    opts = opts || {};
+    var groups = {}, order = [];
+    (rows || []).forEach(function (r) {
+      if (!isOpenOrder(r)) return;
+      var accountId = r.account ? String(r.account).trim() : '';
+      if (!accountId) return;
+      if (!groups[accountId]) { groups[accountId] = []; order.push(accountId); }
+      var raw = r._raw !== undefined ? r._raw : (r._cells ? r._cells.join('\n') : r.instrument);
+      groups[accountId].push(brokerOrderFromParsed(r, raw));
+    });
+    order.sort();
+    return order.map(function (accountId) {
+      var labels = opts.accountLabels || {};
+      return {
+        ingest_source: opts.ingestSource || 'ibkr-enhancer',
+        account_id: accountId,
+        account_label: labels[accountId] || null,
+        captured_at: opts.capturedAt || null,
+        complete: !!opts.complete,
+        orders: groups[accountId]
+      };
+    });
+  }
   // ================= PARSER END =================
 
   var PARSER = { parseNumber: parseNumber, parseInstrument: parseInstrument, normalizeHeader: normalizeHeader,
@@ -436,12 +517,15 @@
     defaultFilterState: defaultFilterState, filterIsActive: filterIsActive, matchesRowFilters: matchesRowFilters,
     buildOrdersSnapshot: buildOrdersSnapshot, gtcTargetLimit: gtcTargetLimit, gtcChipState: gtcChipState, wingPairState: wingPairState, ccCoverageState: ccCoverageState,
     parseInstrumentSearch: parseInstrumentSearch, buildPositionsSnapshot: buildPositionsSnapshot, findShortPosition: findShortPosition, ticketFillPlan: ticketFillPlan,
-    positionsToCsv: positionsToCsv, ordersToCsv: ordersToCsv };
+    positionsToCsv: positionsToCsv, ordersToCsv: ordersToCsv,
+    formatLondonCapturedAt: formatLondonCapturedAt, currencyFromText: currencyFromText,
+    brokerOrderFromParsed: brokerOrderFromParsed, exportedOrdersComplete: exportedOrdersComplete,
+    buildBrokerSnapshots: buildBrokerSnapshots };
   if (typeof module !== 'undefined' && module.exports) module.exports = PARSER;
 
   // ---------- settings ----------
   var DEFAULTS = { marginBar: true, badges: true, grouping: false, filters: true, orderAges: true,
-    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, ticketFill: true, density: 'comfortable', dismissedBar: false, barCollapsed: false };
+    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, ticketFill: true, exportOrders: false, kuberaIngestToken: '', density: 'comfortable', dismissedBar: false, barCollapsed: false };
   function getSetting(key) {
     try { if (typeof GM_getValue === 'function') { var v = GM_getValue('ibx.' + key, undefined); if (v !== undefined) return v; } } catch (e) { /* silent */ }
     try { var raw = window.localStorage.getItem('ibx.' + key); return raw === null ? DEFAULTS[key] : JSON.parse(raw); } catch (e) { return DEFAULTS[key]; }
@@ -452,7 +536,7 @@
   }
   function allOff() {
     return !getSetting('marginBar') && !getSetting('badges') && !getSetting('grouping') &&
-      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips') && !getSetting('wingChips') && !getSetting('ccChips') && !getSetting('ticketFill');
+      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips') && !getSetting('wingChips') && !getSetting('ccChips') && !getSetting('ticketFill') && !getSetting('exportOrders');
   }
 
   var CSS = [
@@ -561,6 +645,7 @@
       var cells = Array.prototype.map.call(tr.querySelectorAll('td'), cellText);
       var model = parseOrderRow(found.headers, cells, tr.getAttribute('data-id'));
       model._tr = tr; model._cells = cells;
+      model._raw = cells.join('\n');
       return model;
     });
   }
@@ -780,7 +865,7 @@
     var title = el('div', '', 'IBKR Enhancer settings'); title.style.fontWeight = '700'; panel.appendChild(title);
     [['marginBar', 'Margin bar'], ['badges', 'Positions badges'], ['grouping', 'Group by underlying'],
      ['filters', 'Filter bars'], ['orderAges', 'Order age / notional'], ['copyButtons', 'Copy CSV buttons'],
-     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips'], ['wingChips', 'Wing pairing chips'], ['ccChips', 'Covered-call chips'], ['ticketFill', 'Order ticket GTC fill']].forEach(function (pairDef) {
+     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips'], ['wingChips', 'Wing pairing chips'], ['ccChips', 'Covered-call chips'], ['ticketFill', 'Order ticket GTC fill'], ['exportOrders', 'Export orders to Kubera']].forEach(function (pairDef) {
       var row = el('label'); row.style.display = 'block';
       var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!getSetting(pairDef[0]);
       cb.setAttribute('data-ibkr-enhancer', '1');
@@ -792,6 +877,13 @@
     ['comfortable', 'compact'].forEach(function (d) { var o = document.createElement('option'); o.value = d; o.textContent = d; if (getSetting('density') === d) o.selected = true; sel.appendChild(o); });
     sel.addEventListener('change', function () { setSetting('density', sel.value); scheduleRun(); });
     drow.appendChild(sel); panel.appendChild(drow);
+    var trow = el('label', '', 'Kubera ingest token: '); trow.style.display = 'block';
+    var tokenInput = document.createElement('input'); tokenInput.type = 'password'; tokenInput.autocomplete = 'off';
+    tokenInput.setAttribute('data-ibkr-enhancer', '1');
+    tokenInput.value = getSetting('kuberaIngestToken') || '';
+    tokenInput.placeholder = 'Stored locally only';
+    tokenInput.addEventListener('change', function () { setSetting('kuberaIngestToken', tokenInput.value.trim()); });
+    trow.appendChild(tokenInput); panel.appendChild(trow);
     var dbgBtn = el('button', '', 'Copy anchor debug');
     dbgBtn.addEventListener('click', function () {
       try { findAccountContext(); } catch (e) { /* silent */ }
@@ -1042,11 +1134,17 @@
     var revertTimer = null;
     b.addEventListener('click', function () {
       var csv = makeCsv();
-      try { navigator.clipboard.writeText(csv).then(function () { log('copied CSV (' + csv.split('\n').length + ' lines)'); }); }
-      catch (e) { log('clipboard failed', e && e.message); }
-      span.textContent = 'Copied \u2713';
-      if (revertTimer) clearTimeout(revertTimer);
-      revertTimer = setTimeout(function () { span.textContent = label; }, 1500);
+      function flip(text) {
+        span.textContent = text;
+        if (revertTimer) clearTimeout(revertTimer);
+        revertTimer = setTimeout(function () { span.textContent = label; }, 1500);
+      }
+      try {
+        var pending = navigator.clipboard.writeText(csv);
+        if (pending && typeof pending.then === 'function') {
+          pending.then(function () { log('copied CSV (' + csv.split('\n').length + ' lines)'); flip('Copied \u2713'); }, function (err) { log('clipboard failed', err && err.message); flip('Copy failed'); });
+        } else flip('Copied \u2713');
+      } catch (e) { log('clipboard failed', e && e.message); flip('Copy failed'); }
     });
     if (found.table.parentElement) found.table.parentElement.insertBefore(b, found.table);
   }
@@ -1060,7 +1158,120 @@
     });
   }
 
+  // ---- Kubera export: Orders page only, GM_xmlhttpRequest only ----
+  var KUBERA_SNAPSHOT_URL = 'http://127.0.0.1:8000/api/v1/broker-orders/snapshot';
+  var lastOrdersFound = null;
+  var exportState = { stableTimer: null, inFlight: false, lastFingerprint: '' };
+  function pagerTotalHint(found) {
+    try {
+      var host = found.table.parentElement;
+      var text = host ? spacedText(host) : '';
+      var m = text.match(/(\d+)\s*[-–]\s*(\d+)\s+of\s+(\d+)/i) || text.match(/of\s+(\d+)\s+(?:orders|rows|entries)\b/i);
+      if (m) return parseNumber(m[m.length - 1]);
+      if (/\b(next|previous)\b/i.test(text) && /\bpage\b/i.test(text)) return Infinity;
+    } catch (e) { /* silent */ }
+    return null;
+  }
+  function setExportStatus(text) {
+    if (!lastOrdersFound || !lastOrdersFound.table.parentElement) return;
+    var host = lastOrdersFound.table.parentElement;
+    var line = host.querySelector('[data-ibkr-enhancer="export-status"]');
+    if (!line) {
+      line = el('div', 'ibx-summary', '');
+      line.setAttribute('data-ibkr-enhancer', 'export-status');
+      host.insertBefore(line, lastOrdersFound.table);
+    }
+    line.textContent = text;
+  }
+  function kuberaPost(snapshot, token) {
+    return new Promise(function (resolve) {
+      if (typeof GM_xmlhttpRequest !== 'function') { resolve({ ok: false, detail: 'GM_xmlhttpRequest unavailable' }); return; }
+      try {
+        GM_xmlhttpRequest({
+          method: 'POST', url: KUBERA_SNAPSHOT_URL,
+          headers: { 'Content-Type': 'application/json', 'X-Kubera-Ingest-Token': token },
+          data: JSON.stringify(snapshot), timeout: 8000,
+          onload: function (res) {
+            var body = null;
+            try { body = JSON.parse(res.responseText || 'null'); } catch (e) { body = null; }
+            resolve({ ok: res.status >= 200 && res.status < 300, status: res.status, body: body });
+          },
+          onerror: function () { resolve({ ok: false, detail: 'network error' }); },
+          ontimeout: function () { resolve({ ok: false, detail: 'timeout' }); }
+        });
+      } catch (e) { resolve({ ok: false, detail: String(e && e.message || e) }); }
+    });
+  }
+  function doExportOrders(force) {
+    if (!getSetting('exportOrders') || exportState.inFlight) return;
+    var rows = liveRows.orders || [];
+    if (!lastOrdersFound) return;
+    var capturedAt = formatLondonCapturedAt(new Date());
+    var openRows = rows.filter(isOpenOrder);
+    var complete = exportedOrdersComplete(rows.length, pagerTotalHint(lastOrdersFound));
+    var snapshots = buildBrokerSnapshots(rows, { capturedAt: capturedAt, complete: complete, ingestSource: 'ibkr-enhancer', accountLabels: {} });
+    // The panel alias names only the account in view; label it solely
+    // when the table holds that one account, never guess the others.
+    if (snapshots.length === 1 && lastAccountAlias) snapshots[0].account_label = lastAccountAlias;
+    var exportedCount = snapshots.reduce(function (n, s) { return n + s.orders.length; }, 0);
+    if (exportedCount < openRows.length) snapshots.forEach(function (s) { s.complete = false; });
+    var fingerprint = JSON.stringify(snapshots.map(function (s) {
+      return [s.account_id, s.complete, s.orders.map(function (o) { return [o.order_id, o.limit_price, o.qty_remain, o.status].join(':'); }).join(',')].join('|');
+    }));
+    if (!force && fingerprint === exportState.lastFingerprint) return;
+    var token = String(getSetting('kuberaIngestToken') || '').trim();
+    if (!snapshots.length) { setExportStatus('Kubera export: no open orders to send.'); return; }
+    exportState.inFlight = true;
+    if (!token) {
+      exportState.inFlight = false;
+      try { setSetting('kuberaPendingSnapshots', snapshots); } catch (e) { /* silent */ }
+      setExportStatus('Kubera export needs an ingest token (gear panel).');
+      return;
+    }
+    Promise.all(snapshots.map(function (s) { return kuberaPost(s, token); })).then(function (results) {
+      exportState.inFlight = false;
+      var failed = results.filter(function (r) { return !r.ok; });
+      var hhmm = capturedAt.slice(11, 16);
+      if (failed.length) {
+        try { setSetting('kuberaPendingSnapshots', snapshots); } catch (e) { /* silent */ }
+        setExportStatus('Kubera export failed (' + hhmm + '); queued, will retry on next page load.');
+        log('Kubera export failed', failed[0].status || failed[0].detail || '');
+        return;
+      }
+      exportState.lastFingerprint = fingerprint;
+      try { setSetting('kuberaPendingSnapshots', []); } catch (e) { /* silent */ }
+      var added = 0, changed = 0, gone = 0;
+      results.forEach(function (r) {
+        var diff = (r.body && r.body.diff) || {};
+        added += (diff.new || []).length;
+        changed += (diff.changed || []).length;
+        gone += (diff.gone || []).length;
+      });
+      setExportStatus('Exported ' + hhmm + ', ' + exportedCount + ' orders, +' + added + ' new, ~' + changed + ' changed, \u2212' + gone + ' gone');
+    });
+  }
+  function scheduleStableExport() {
+    if (!getSetting('exportOrders')) return;
+    if (exportState.stableTimer) clearTimeout(exportState.stableTimer);
+    var countAtCheck = (liveRows.orders || []).length;
+    exportState.stableTimer = setTimeout(function () {
+      exportState.stableTimer = null;
+      // Second check 500ms later: export only if the count held.
+      if ((liveRows.orders || []).length === countAtCheck) doExportOrders(false);
+    }, 500);
+  }
+  function renderExportButton(found) {
+    if (!getSetting('exportOrders')) return;
+    if (found.table.parentElement && found.table.parentElement.querySelector('[data-ibkr-enhancer="export"]')) return;
+    var b = el('button', 'ibx-pill ibx-copy', 'Export now');
+    b.setAttribute('data-ibkr-enhancer', 'export');
+    b.addEventListener('click', function () { doExportOrders(true); });
+    if (found.table.parentElement) found.table.parentElement.insertBefore(b, found.table);
+    setExportStatus('Kubera export ready.');
+  }
+
   function enhanceOrders(found) {
+    lastOrdersFound = found;
     var rows = readOrders(found);
     liveRows.orders = rows;
     var visible = dataRows(found).length;
@@ -1089,6 +1300,12 @@
     if (getSetting('filters')) renderFilterBar(found, rows, 'orders'); else clearFilterState(found);
     if (getSetting('copyButtons')) renderCopyButton(found, function () { return ordersToCsv(rows, new Date().toISOString()); }, 'Copy orders as CSV');
     if (getSetting('readability')) applyReadability(found.table);
+    if (!getSetting('exportOrders')) {
+      removeInjected('[data-ibkr-enhancer="export"]');
+      removeInjected('[data-ibkr-enhancer="export-status"]');
+    }
+    renderExportButton(found);
+    scheduleStableExport();
     return rows;
   }
 
@@ -1172,8 +1389,12 @@
         'Time-In-Force: GTC'
       ];
       lines.forEach(function (ln) { summary.appendChild(el('div', '', ln)); });
-      var askM = spacedText(ticket).match(/\bAsk\s*:?\s+([+-]?[\d,]+(?:\.\d+)?)/i);
-      var ask = askM ? parseNumber(askM[1]) : null;
+      var askEl = ticket.querySelector('.ask-price');
+      var ask = askEl ? parseNumber(askEl.textContent) : null;
+      if (ask === null) {
+        var askM = spacedText(ticket).match(/\bAsk\s*:?\s+([+-]?[\d,]+(?:\.\d+)?)/i);
+        ask = askM ? parseNumber(askM[1]) : null;
+      }
       if (ask !== null && plan.limit >= ask) summary.appendChild(el('div', '', 'Warning: target is at or above the ask price; this fills immediately and will not rest as a GTC.'));
       if (plan.last !== null && plan.last !== undefined && plan.last < plan.limit) summary.appendChild(el('div', '', 'Warning: the last price is already beyond the target.'));
       var fillBtn = el('button', 'ibx-pill ibx-on', 'Fill');

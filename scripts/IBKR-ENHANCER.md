@@ -2,12 +2,34 @@
 
 Read-only scan aids for Interactive Brokers Client Portal, built for an
 option-wheel workflow. One file: `ibkr-enhancer.user.js`. Vanilla JS, no
-`@require`, no network calls. Grants: `GM_addStyle`, `GM_setValue`,
-`GM_getValue` (settings only).
+`@require`. Grants: `GM_addStyle`, `GM_setValue`, `GM_getValue`, plus
+`GM_xmlhttpRequest` used only by the optional Kubera export below
+(`@connect 127.0.0.1`, `@connect localhost`).
 
-**It never places, cancels, modifies or transmits an order, never clicks a
-native action button, and never sends page data anywhere.** Copy buttons write
-CSV to the clipboard only.
+**It never places, cancels, modifies or transmits an order and never clicks
+a native action button.** Copy buttons write CSV to the clipboard only.
+The only network call anywhere is the opt-in export of parsed open orders
+to the user's own local Kubera at `http://127.0.0.1:8000`; see below.
+
+## Kubera export (v0.8.0, Orders page only, default off)
+
+Settings toggle "Export orders to Kubera" plus a "Kubera ingest token"
+field in the gear panel (stored via `GM_setValue`, never hard-coded).
+Once the Orders table has rendered and the row count is stable across
+two checks 500 ms apart (again after a native Refresh, debounced), the
+script POSTs one snapshot per account, grouped by the row's Account
+column, via `GM_xmlhttpRequest` only (page `fetch` to HTTP localhost is
+mixed-content blocked). `captured_at` is Europe/London with its offset.
+Terminal orders are excluded, consistent with the rest of the enhancer.
+Completeness: a pager showing more rows than rendered, or rows the
+builder could not group, means `complete: false`; the enhancer never
+guesses. The saved Orders fixture has no pager and renders all 23 rows,
+so it exports `complete: true`; the live-page pager check is still owed.
+Feedback is one line above the table (`Exported HH:MM, N orders, +a new,
+~b changed, −c gone` from Kubera's diff); on failure one muted line,
+the latest snapshot is queued in `GM_setValue` and retried on the next
+page load. A manual "Export now" button forces a send. No alerts, no
+retries in a loop, never blocking the page.
 
 ## What it does
 

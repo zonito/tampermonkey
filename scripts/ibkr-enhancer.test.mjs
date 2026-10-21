@@ -14,7 +14,7 @@ assert.ok(start >= 0 && end > start, 'parser markers present');
 const parserSrc = src.slice(start, end);
 const mod = { exports: {} };
 // The parser block references `module` only via the guard below it; evaluate block + export line.
-new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, parseInstrumentSearch, buildPositionsSnapshot, findShortPosition, ticketFillPlan, positionsToCsv, ordersToCsv };')(mod, mod.exports);
+new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, parseInstrumentSearch, buildPositionsSnapshot, findShortPosition, ticketFillPlan, positionsToCsv, ordersToCsv, formatLondonCapturedAt, currencyFromText, brokerOrderFromParsed, exportedOrdersComplete, buildBrokerSnapshots };')(mod, mod.exports);
 const P = mod.exports;
 
 const H = ['Instrument', 'Position', 'Change %', 'Cost Basis', 'Market Value', 'Last', 'Avg Price', 'Daily P&L', 'Unrealized P&L', 'Delta', '52wk IV Rank', '52wk IV Pctl', 'P/E', 'Forward P/E', 'Beta', 'Market Cap', 'Social Sentiment Score', 'Social Sentiment Score Change'];
@@ -237,6 +237,35 @@ test('ticket fill plan blocks: stale, alias mismatch, bad target, no match', () 
   assert.equal(P.ticketFillPlan({ ...pos, avgPrice: 0.01 }, {}).blocked, 'BAD_TARGET');
   assert.equal(P.ticketFillPlan({ ...pos, avgPrice: 0 }, {}).blocked, 'BAD_TARGET');
   assert.equal(P.ticketFillPlan({ ...pos, avgPrice: null }, {}).blocked, 'BAD_TARGET');
+});
+
+test('Kubera payload builder: grouping, terminal exclusion, complete flag', () => {
+  const OH = ['', 'Orders', 'Action', 'Filled/Remain', 'Status', 'Price', 'Account', 'Order id', '', ''];
+  const mkRow = (account, id, status) => P.parseOrderRow(OH, ['', "ACME Nov20'26 35 Put\nACME Nov20'26 35 Put Limit 0.60, GTC", 'Buy', '0/2', status + ' 10/12/2026, 9:30 AM', '—', account, id, '', ''], id);
+  const rows = [mkRow('FAKE-A1', '1001', 'Submitted'), mkRow('FAKE-A1', '1002', 'Cancelled'), mkRow('FAKE-B2', '2001', 'Submitted')];
+  rows[0]._raw = "ACME Nov20'26 35 Put Limit 0.60, GTC USD";
+  const snaps = P.buildBrokerSnapshots(rows, { capturedAt: '2026-10-21T10:00:00+01:00', complete: true, ingestSource: 'test', accountLabels: { 'FAKE-A1': 'FakeOne' } });
+  assert.equal(snaps.length, 2); // grouped per account, never merged
+  assert.equal(snaps[0].account_id, 'FAKE-A1'); assert.equal(snaps[0].account_label, 'FakeOne');
+  assert.equal(snaps[0].orders.length, 1); // Cancelled terminal excluded
+  assert.equal(snaps[1].orders.length, 1);
+  const o = snaps[0].orders[0];
+  assert.equal(o.order_id, '1001'); assert.equal(o.symbol, 'ACME'); assert.equal(o.asset_type, 'option');
+  assert.equal(o.expiry_date, '2026-11-20'); assert.equal(o.strike_price, 35); assert.equal(o.option_type, 'Put');
+  assert.equal(o.qty_total, 2); assert.equal(o.qty_remain, 2); assert.equal(o.limit_price, 0.6);
+  assert.equal(o.tif, 'GTC'); assert.equal(o.status, 'Submitted'); assert.ok(o.status_at);
+  assert.equal(o.currency, 'USD'); assert.deepEqual(o.legs, []);
+  assert.equal(P.exportedOrdersComplete(23, null), true);
+  assert.equal(P.exportedOrdersComplete(23, 23), true);
+  assert.equal(P.exportedOrdersComplete(10, 23), false); // pager shows more than rendered
+  const equity = P.brokerOrderFromParsed({ underlying: 'ACME', type: 'equity', expiryISO: null, strike: null, action: 'Buy', qty: 10, filled: 0, remain: 10, limitPrice: 55, tif: 'GTC', status: 'Submitted', statusDate: null, orderId: '3001' }, 'ACME Buy Limit 55.00, GTC');
+  assert.equal(equity.asset_type, 'equity'); assert.equal(equity.expiry_date, null); assert.equal(equity.option_type, null);
+});
+
+test('London captured_at carries the Europe/London offset', () => {
+  assert.ok(P.formatLondonCapturedAt(new Date('2026-01-15T12:00:00Z')).endsWith('+00:00'));
+  assert.ok(P.formatLondonCapturedAt(new Date('2026-07-15T12:00:00Z')).endsWith('+01:00'));
+  assert.ok(P.formatLondonCapturedAt(new Date('2026-07-15T12:00:00Z')).startsWith('2026-07-15T13:00:00'));
 });
 
 test('duplicate strike detection + CSV shape', () => {
