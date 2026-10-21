@@ -21,7 +21,6 @@ Install any of these by opening the `.user.js` file in Tampermonkey.
 
 - **IBKR Enhancer** (Interactive Brokers Client Portal): built, at
   [`scripts/ibkr-enhancer.user.js`](scripts/ibkr-enhancer.user.js). Brief in
-  [`prompts/ibkr-enhancer-prompt.md`](prompts/ibkr-enhancer-prompt.md).
   Read-only by design: it must never place, cancel or modify an order.
 
 ## Archive
