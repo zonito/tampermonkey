@@ -14,7 +14,7 @@ assert.ok(start >= 0 && end > start, 'parser markers present');
 const parserSrc = src.slice(start, end);
 const mod = { exports: {} };
 // The parser block references `module` only via the guard below it; evaluate block + export line.
-new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, positionsToCsv, ordersToCsv };')(mod, mod.exports);
+new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, positionsToCsv, ordersToCsv };')(mod, mod.exports);
 const P = mod.exports;
 
 const H = ['Instrument', 'Position', 'Change %', 'Cost Basis', 'Market Value', 'Last', 'Avg Price', 'Daily P&L', 'Unrealized P&L', 'Delta', '52wk IV Rank', '52wk IV Pctl', 'P/E', 'Forward P/E', 'Beta', 'Market Cap', 'Social Sentiment Score', 'Social Sentiment Score Change'];
@@ -96,6 +96,23 @@ test('DTE, age, cushion, premium, ITM, notional', () => {
   assert.equal(P.remainingNotional({ type: 'put', strike: 35, remain: 20 }), 70000);
   assert.equal(P.netDeltaExposure({ type: 'put', qty: -2, delta: -0.3 }), 60);
   assert.equal(P.netDeltaExposure({ type: 'equity', qty: 100, delta: null }), 100);
+});
+
+test('terminal statuses: cancelled twin gives no duplicate and contributes 0', () => {
+  const base = { underlying: 'AXTI', expiryISO: '2026-11-20', strike: 75, type: 'call', remain: 8, statusDate: new Date('2026-10-01T14:48:00Z') };
+  const submitted = { ...base, status: 'Submitted' };
+  const cancelled = { ...base, status: 'Cancelled' };
+  const dups = P.duplicateOrderKeys([submitted, cancelled]);
+  assert.deepEqual(dups, {});
+  const s = P.summarizeOrders([submitted, cancelled], new Date('2026-11-13T12:00:00Z'));
+  assert.equal(s.openCount, 1);
+  assert.equal(s.totalNotional, 8 * 75 * 100);
+  assert.equal(s.staleCount, 1);
+  for (const t of ['Cancelled', 'ApiCancelled', 'Filled', 'Inactive', 'Expired', 'Rejected']) assert.equal(P.isTerminalStatus(t), true, t);
+  assert.equal(P.isOpenOrder(submitted), true); assert.equal(P.isOpenOrder(cancelled), false);
+  // two genuinely open twins still flag
+  const d2 = P.duplicateOrderKeys([submitted, { ...base, status: 'Submitted' }]);
+  assert.equal(d2['AXTI|2026-11-20|75'], true);
 });
 
 test('duplicate strike detection + CSV shape', () => {

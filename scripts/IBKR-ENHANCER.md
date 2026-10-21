@@ -38,7 +38,10 @@ CSV to the clipboard only.
   Equities / ITM / expiring <= 7d / <= 21d; Buys / Sells / stale > 14d).
   `/` focuses the text box. Hiding is visual only; Reset restores the native
   view.
-- **Orders**: age badge from the Status date, remaining notional
+- **Orders**: terminal statuses (Cancelled, ApiCancelled, Filled, Inactive,
+  Expired, Rejected) are not open: excluded from duplicate detection, the
+  summary line and all badges, and from the Buy/Sell/Stale filtered sets.
+  Open orders get an age badge from the Status date, remaining notional
   (remain x strike x 100) in the badge tooltip, summary line (open count,
   total remaining option notional, count > 14 days), and a duplicate flag for
   two open orders on the same underlying + expiry + strike (flag only).

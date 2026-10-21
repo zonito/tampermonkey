@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.1.2
+// @version      0.1.3
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -199,10 +199,25 @@
     if (!row || row.type === 'equity' || row.remain === null || row.remain === undefined || !row.strike) return null;
     return row.remain * row.strike * 100;
   }
+  var TERMINAL_STATUSES = { Cancelled: true, ApiCancelled: true, Filled: true, Inactive: true, Expired: true, Rejected: true };
+  function isTerminalStatus(status) { return !!TERMINAL_STATUSES[String(status || '').trim()]; }
+  function isOpenOrder(o) { return !!o && !isTerminalStatus(o.status); }
+  function summarizeOrders(orders, now) {
+    var openCount = 0, totalNotional = 0, staleCount = 0;
+    (orders || []).forEach(function (o) {
+      if (!isOpenOrder(o)) return;
+      openCount++;
+      var notion = remainingNotional(o);
+      if (notion !== null) totalNotional += notion;
+      var age = ageDays(o.statusDate, now);
+      if (age !== null && age > 14) staleCount++;
+    });
+    return { openCount: openCount, totalNotional: totalNotional, staleCount: staleCount };
+  }
   function duplicateOrderKeys(orders) {
     var seen = {}, dups = {};
     (orders || []).forEach(function (o, i) {
-      if (!o || o.type === 'equity') return;
+      if (!o || o.type === 'equity' || !isOpenOrder(o)) return;
       var k = [o.underlying, o.expiryISO || '', o.strike].join('|');
       if (seen[k] !== undefined) { dups[k] = true; dups[seen[k]] = true; }
       else seen[k] = i;
@@ -249,6 +264,7 @@
     parseStatus: parseStatus, dte: dte, ageDays: ageDays, cushionPct: cushionPct, cushionBand: cushionBand,
     premiumCaptured: premiumCaptured, isITM: isITM, netDeltaExposure: netDeltaExposure,
     remainingNotional: remainingNotional, duplicateOrderKeys: duplicateOrderKeys, orderKey: orderKey,
+    isTerminalStatus: isTerminalStatus, isOpenOrder: isOpenOrder, summarizeOrders: summarizeOrders,
     positionsToCsv: positionsToCsv, ordersToCsv: ordersToCsv };
   if (typeof module !== 'undefined' && module.exports) module.exports = PARSER;
 
@@ -579,6 +595,7 @@
       if (state.d7 && !(days !== null && days <= 7)) return false;
       if (state.d21 && !(days !== null && days <= 21)) return false;
     } else {
+      if (!isOpenOrder(r) && (state.buysOnly || state.sellsOnly || state.stale)) return false;
       if (state.buysOnly && r.action !== 'Buy') return false;
       if (state.sellsOnly && r.action !== 'Sell') return false;
       var age = ageDays(r.statusDate);
@@ -663,12 +680,12 @@
     var visible = dataRows(found).length;
     log('orders parsed ' + rows.length + ' / visible ' + visible);
     var dupes = duplicateOrderKeys(rows);
-    var totalNotional = 0, staleCount = 0;
+    var summary = summarizeOrders(rows);
+    var totalNotional = summary.totalNotional, staleCount = summary.staleCount;
     rows.forEach(function (r) {
+      if (!isOpenOrder(r)) return;
       var age = ageDays(r.statusDate);
-      if (age !== null && age > 14) staleCount++;
       var notion = remainingNotional(r);
-      if (notion !== null) totalNotional += notion;
       if (getSetting('orderAges')) {
         var cell = instrumentCell(r._tr, found.headers);
         if (age !== null) addBadge(cell, age + 'd old', age > 14 ? 'ibx-badge-red' : 'ibx-badge-muted', 'Age from Status date. Remaining notional at strike: ' + (notion !== null ? fmtMoney(notion) : 'n/a'));
@@ -678,7 +695,7 @@
       }
     });
     if (getSetting('orderAges') && found.table.parentElement && !found.table.parentElement.querySelector('[data-ibkr-enhancer="summary"]')) {
-      var s = el('div', 'ibx-summary', 'Open orders: ' + rows.length + ' | Total remaining option notional: ' + fmtMoney(totalNotional) + ' | Orders >14 days: ' + staleCount);
+      var s = el('div', 'ibx-summary', 'Open orders: ' + summary.openCount + ' | Total remaining option notional: ' + fmtMoney(totalNotional) + ' | Orders >14 days: ' + staleCount);
       s.setAttribute('data-ibkr-enhancer', 'summary');
       found.table.parentElement.insertBefore(s, found.table);
     }

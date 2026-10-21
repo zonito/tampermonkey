@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-21 (v0.1.3)
+
+- IBKR Enhancer: terminal order statuses (Cancelled, ApiCancelled, Filled,
+  Inactive, Expired, Rejected) are excluded from duplicate detection, the
+  open-orders summary (count, notional, stale) and all order badges; the
+  Buy/Sell/Stale filters use the same open set. Synthetic pair test added.
+
 ## 2026-10-21 (v0.1.2)
 
 - IBKR Enhancer anchor correction (jsdom gate against both fixtures):
