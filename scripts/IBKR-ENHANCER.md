@@ -132,6 +132,16 @@ orders snapshot holds a working Sell exit for it). Covered shorts get a
 small WINGED marker beside their GTC chip. Pure function `wingPairState`.
 New settings toggle: "Wing pairing chips".
 
+## Phase 2C: covered-call chips (v0.4.0)
+
+Equity rows show covered-call coverage: capacity = floor(shares / 100),
+coverage = short call contracts on the underlying plus remain on working
+Sell call orders in the orders snapshot. Green "CC ✓ n/N" at full coverage,
+amber "CC n/N" partial, muted "No CC · up to N" at zero, with covering
+strikes/expiries (or available contracts) in the tooltip. Equities under
+100 shares get no chip. Pure function `ccCoverageState`. New settings
+toggle: "Covered-call chips".
+
 ## Phase 2 candidates (not built)
 
 DTE/expiry-week digest, per-underlying P&L history from repeated CSV

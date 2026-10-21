@@ -14,7 +14,7 @@ assert.ok(start >= 0 && end > start, 'parser markers present');
 const parserSrc = src.slice(start, end);
 const mod = { exports: {} };
 // The parser block references `module` only via the guard below it; evaluate block + export line.
-new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, positionsToCsv, ordersToCsv };')(mod, mod.exports);
+new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, positionsToCsv, ordersToCsv };')(mod, mod.exports);
 const P = mod.exports;
 
 const H = ['Instrument', 'Position', 'Change %', 'Cost Basis', 'Market Value', 'Last', 'Avg Price', 'Daily P&L', 'Unrealized P&L', 'Delta', '52wk IV Rank', '52wk IV Pctl', 'P/E', 'Forward P/E', 'Beta', 'Market Cap', 'Social Sentiment Score', 'Social Sentiment Score Change'];
@@ -187,6 +187,22 @@ test('wing pairing: paired, partial, orphan, orphan-exit, quantity consumption',
   // nearest expiry preferred: long Dec, shorts Nov (invalid, earlier) and Dec
   w = P.wingPairState([put(1, 30, '2026-12-18'), put(-1, 35, '2026-11-20'), put(-1, 36, '2026-12-18')], null);
   assert.equal(w.byIndex[0].pairs[0].shortIndex, 2);
+});
+
+test('covered-call coverage: full, partial, none, snapshot-only', () => {
+  const eq = { underlying: 'AXTI', type: 'equity', qty: 250 }; // capacity 2
+  const sc = (qty, strike) => ({ underlying: 'AXTI', type: 'call', qty, strike, expiryISO: '2026-11-20' });
+  let s = P.ccCoverageState(eq, [eq, sc(-2, 80)], null);
+  assert.equal(s.capacity, 2); assert.equal(s.covered, 2); assert.equal(s.state, 'full');
+  s = P.ccCoverageState(eq, [eq, sc(-1, 80)], null);
+  assert.equal(s.covered, 1); assert.equal(s.state, 'partial');
+  s = P.ccCoverageState(eq, [eq, sc(1, 80)], null); // long call does not cover
+  assert.equal(s.covered, 0); assert.equal(s.state, 'none');
+  const snap = { savedAt: '2026-11-13T00:00:00Z', orders: [{ underlying: 'AXTI', type: 'call', action: 'Sell', strike: 85, expiryISO: '2026-12-18', remain: 2, status: 'Submitted' }] };
+  s = P.ccCoverageState(eq, [eq], snap);
+  assert.equal(s.covered, 2); assert.equal(s.orderRemain, 2); assert.equal(s.state, 'full');
+  s = P.ccCoverageState({ underlying: 'AXTI', type: 'equity', qty: 99 }, [eq], snap);
+  assert.equal(s.capacity, 0);
 });
 
 test('duplicate strike detection + CSV shape', () => {

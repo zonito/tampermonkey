@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.3.1
+// @version      0.4.0
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -286,6 +286,28 @@
     });
     return { byIndex: byIndex, wingedShorts: Object.keys(winged).map(Number) };
   }
+  function ccCoverageState(equityRow, positions, snapshot) {
+    var shares = equityRow && equityRow.qty !== null && equityRow.qty !== undefined ? equityRow.qty : 0;
+    var capacity = Math.floor(Math.max(shares, 0) / 100);
+    var covering = [];
+    var shortContracts = 0;
+    (positions || []).forEach(function (r) {
+      if (r && r.type === 'call' && r.qty !== null && r.qty !== undefined && r.qty < 0 && r.underlying === equityRow.underlying) {
+        shortContracts += Math.abs(r.qty);
+        covering.push({ strike: r.strike, expiryISO: r.expiryISO || null, qty: Math.abs(r.qty), source: 'position' });
+      }
+    });
+    var orderRemain = 0;
+    (((snapshot && snapshot.orders) || [])).forEach(function (o) {
+      if (o && o.action === 'Sell' && o.type === 'call' && o.underlying === equityRow.underlying && o.remain) {
+        orderRemain += o.remain;
+        covering.push({ strike: o.strike, expiryISO: o.expiryISO || null, qty: o.remain, source: 'order' });
+      }
+    });
+    var covered = shortContracts + orderRemain;
+    var state = capacity > 0 && covered >= capacity ? 'full' : (covered > 0 ? 'partial' : 'none');
+    return { capacity: capacity, covered: covered, shortContracts: shortContracts, orderRemain: orderRemain, covering: covering, state: state };
+  }
   function defaultFilterState(kind) {
     return kind === 'positions'
       ? { text: '', typeSeg: 'all', expirySeg: 'any', itmOnly: false }
@@ -368,13 +390,13 @@
     remainingNotional: remainingNotional, duplicateOrderKeys: duplicateOrderKeys, orderKey: orderKey,
     isTerminalStatus: isTerminalStatus, isOpenOrder: isOpenOrder, summarizeOrders: summarizeOrders,
     defaultFilterState: defaultFilterState, filterIsActive: filterIsActive, matchesRowFilters: matchesRowFilters,
-    buildOrdersSnapshot: buildOrdersSnapshot, gtcTargetLimit: gtcTargetLimit, gtcChipState: gtcChipState, wingPairState: wingPairState,
+    buildOrdersSnapshot: buildOrdersSnapshot, gtcTargetLimit: gtcTargetLimit, gtcChipState: gtcChipState, wingPairState: wingPairState, ccCoverageState: ccCoverageState,
     positionsToCsv: positionsToCsv, ordersToCsv: ordersToCsv };
   if (typeof module !== 'undefined' && module.exports) module.exports = PARSER;
 
   // ---------- settings ----------
   var DEFAULTS = { marginBar: true, badges: true, grouping: false, filters: true, orderAges: true,
-    copyButtons: true, readability: true, gtcChips: true, wingChips: true, density: 'comfortable', dismissedBar: false };
+    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, density: 'comfortable', dismissedBar: false };
   function getSetting(key) {
     try { if (typeof GM_getValue === 'function') { var v = GM_getValue('ibx.' + key, undefined); if (v !== undefined) return v; } } catch (e) { /* silent */ }
     try { var raw = window.localStorage.getItem('ibx.' + key); return raw === null ? DEFAULTS[key] : JSON.parse(raw); } catch (e) { return DEFAULTS[key]; }
@@ -385,7 +407,7 @@
   }
   function allOff() {
     return !getSetting('marginBar') && !getSetting('badges') && !getSetting('grouping') &&
-      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips') && !getSetting('wingChips');
+      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips') && !getSetting('wingChips') && !getSetting('ccChips');
   }
 
   var CSS = [
@@ -643,7 +665,7 @@
     var title = el('div', '', 'IBKR Enhancer settings'); title.style.fontWeight = '700'; panel.appendChild(title);
     [['marginBar', 'Margin bar'], ['badges', 'Positions badges'], ['grouping', 'Group by underlying'],
      ['filters', 'Filter bars'], ['orderAges', 'Order age / notional'], ['copyButtons', 'Copy CSV buttons'],
-     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips'], ['wingChips', 'Wing pairing chips']].forEach(function (pairDef) {
+     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips'], ['wingChips', 'Wing pairing chips'], ['ccChips', 'Covered-call chips']].forEach(function (pairDef) {
       var row = el('label'); row.style.display = 'block';
       var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!getSetting(pairDef[0]);
       cb.setAttribute('data-ibkr-enhancer', '1');
@@ -728,6 +750,20 @@
             ' | 60% target \u2264 ' + (chip.target !== null && chip.target !== undefined ? chip.target : 'n/a') +
             ' | Snapshot: ' + snapTxt + (chip.stale ? ' (stale >24h)' : ''));
         }
+      });
+    }
+    if (getSetting('ccChips')) {
+      var ccSnap = null;
+      try { ccSnap = getSetting('ordersSnapshot') || null; } catch (e) { ccSnap = null; }
+      rows.forEach(function (r) {
+        if (r.type !== 'equity') return;
+        var cc = ccCoverageState(r, rows, ccSnap);
+        if (cc.capacity < 1) return;
+        var cell = instrumentCell(r._tr, found.headers);
+        var coverTxt = cc.covering.length ? cc.covering.map(function (c) { return c.strike + ' ' + (c.expiryISO || '') + ' \u00D7' + c.qty + ' (' + c.source + ')'; }).join('; ') : '';
+        if (cc.state === 'full') addBadge(cell, 'CC \u2713 ' + cc.covered + '/' + cc.capacity, 'ibx-badge-green', 'Covering calls: ' + coverTxt);
+        else if (cc.state === 'partial') addBadge(cell, 'CC ' + cc.covered + '/' + cc.capacity, 'ibx-badge-amber', 'Covering calls: ' + coverTxt);
+        else addBadge(cell, 'No CC \u00B7 up to ' + cc.capacity, 'ibx-badge-muted', 'Available contracts: ' + cc.capacity + ' (no short calls or working Sell call orders)');
       });
     }
     if (getSetting('wingChips')) {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-21 (v0.4.0) — Phase 2C
+
+- IBKR Enhancer covered-call chips on equity rows: capacity floor(shares/100)
+  vs short-call contracts plus Sell-call snapshot remain; green/amber/muted
+  states with covering strikes in the tooltip.
+
 ## 2026-10-21 (v0.3.1)
 
 - IBKR Enhancer anchor fix for live glued text: everything the anchor reads
