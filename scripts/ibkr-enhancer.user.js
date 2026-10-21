@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.3.0
+// @version      0.3.1
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -491,6 +491,18 @@
     });
   }
 
+  // Live textContent glues leaf texts ("NikhilaU26948221USD..."); spacedText
+  // joins text nodes with a separator so token boundaries survive.
+  function spacedText(node) {
+    if (!node) return '';
+    try {
+      var walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+      var parts = [], n;
+      while ((n = walker.nextNode())) { var t = n.textContent.trim(); if (t) parts.push(t); }
+      if (parts.length) return parts.join(' ');
+    } catch (e) { /* fall through */ }
+    return String(node.textContent || '').replace(/\s+/g, ' ').trim();
+  }
   var lastAnchorDebug = 'IBX-ANCHOR reason=NOT_RUN';
   function anchorDebugLine(d) {
     return 'IBX-ANCHOR labels[EL=' + d.el + ',BP=' + d.bp + ',MM=' + d.mm + ',UP=' + d.up + '] depth=' + d.depth +
@@ -515,7 +527,7 @@
     function labelledValue(lab) {
       var el = labelEls[lab]; if (!el) return null;
       var container = el.parentElement;
-      var scope = container ? container.textContent : el.textContent;
+      var scope = container ? spacedText(container) : spacedText(el);
       var rest = String(scope || '').replace(lab, '');
       var nums = rest.match(/[+-]?[\d,]+(?:\.\d+)?/g);
       return nums && nums.length ? parseNumber(nums[0]) : null;
@@ -530,14 +542,14 @@
     var item = null, node = firstLabelEl;
     dbg.reason = firstLabelEl ? 'NO_ITEM_1ID' : 'NO_LABELS';
     for (var depth = 0; node && depth < 25; depth++) {
-      var ids = (node.textContent || '').match(/\b[A-Z]\d{5,}\b/g) || [];
+      var ids = spacedText(node).match(/\b[A-Z]\d{5,}\b/g) || [];
       if (ids.length === 1) { item = node; dbg.depth = depth; dbg.ids = 1; }
       if (ids.length >= 2) { if (!item) dbg.ids = ids.length; break; }
       node = node.parentElement;
     }
     if (item) {
       dbg.reason = 'NO_ID_IN_HEADER';
-      var fullText = (item.textContent || '').replace(/\s+/g, ' ').trim();
+      var fullText = spacedText(item);
       var cut = fullText.length;
       cutLabels.forEach(function (lab) { var i = fullText.indexOf(lab); if (i >= 0 && i < cut) cut = i; });
       var header = fullText.slice(0, cut);

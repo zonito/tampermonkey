@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-21 (v0.3.1)
+
+- IBKR Enhancer anchor fix for live glued text: everything the anchor reads
+  (ID counting, header slice, labelled values) now uses spaced-text
+  extraction (TreeWalker joining text nodes with a separator), because live
+  textContent concatenates leaf texts with no whitespace. Glued minified
+  jsdom variant reproduced NO_ITEM_1ID before the fix, passes after it; the
+  saved-fixture gate stays green.
+
 ## 2026-10-21 (v0.3.0) — Phase 2B
 
 - IBKR Enhancer wing pairing: greedy quantity-consuming match of long
