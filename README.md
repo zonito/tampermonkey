@@ -15,12 +15,13 @@ Install any of these by opening the `.user.js` file in Tampermonkey.
 | Remove Ads Placeholders | marketbeat.com, finance.yahoo.com, nasdaq.com | Removes ad placeholders and sponsored blocks |
 | Remove YouTube Shorts | youtube.com | Removes Shorts sections |
 | Dracula Youtube Music CSS | music.youtube.com | Dracula theme for YouTube Music via `GM_addStyle` |
+| IBKR Enhancer | interactivebrokers.co.uk/.com Client Portal | Read-only scan aids: margin cushion bar, option DTE/ITM/premium badges, grouping, filters, order age/notional, CSV copy. See [`scripts/IBKR-ENHANCER.md`](scripts/IBKR-ENHANCER.md) |
 
 ## In progress
 
-- **IBKR Enhancer** (Interactive Brokers Client Portal): brief for the local
-  agent is in [`prompts/ibkr-enhancer-prompt.md`](prompts/ibkr-enhancer-prompt.md).
-  The script itself lands at `scripts/ibkr-enhancer.user.js` when built.
+- **IBKR Enhancer** (Interactive Brokers Client Portal): built, at
+  [`scripts/ibkr-enhancer.user.js`](scripts/ibkr-enhancer.user.js). Brief in
+  [`prompts/ibkr-enhancer-prompt.md`](prompts/ibkr-enhancer-prompt.md).
   Read-only by design: it must never place, cancel or modify an order.
 
 ## Archive
