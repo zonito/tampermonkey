@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-21 (v0.5.2)
+
+- IBKR Enhancer margin bar: × is now a collapse control folding the bar to
+  a docked cushion chip (dot + "Margin" when unresolved); clicking the
+  chip re-expands. Collapsed state persists in GM storage. The settings
+  Margin bar toggle remains the only full off.
+
 ## 2026-10-21 (v0.5.1)
 
 - IBKR Enhancer CC chip fix: covered-call coverage sources split. Only

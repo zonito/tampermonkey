@@ -19,6 +19,11 @@ CSV to the clipboard only.
   two-column table of all anchor fields (NLV, Excess Liquidity, Buying
   Power, Maintenance Margin, Unrealized/Realized P&L, Settled Cash when
   present); it closes on toggle, its Close button, or an outside click.
+  The bar's × collapses it to a slim docked chip at bottom-right showing
+  the cushion pill (or a dot + "Margin" when the headline is unresolved);
+  clicking the chip re-expands it. The collapsed state persists in GM
+  storage across reloads and re-renders. The settings "Margin bar" toggle
+  is the only full off.
   Fail-safe: the headline is anchored on the sidebar account item (the
   largest label ancestor, up to 25 levels, still containing exactly one
   account-ID token; 2+ IDs is the multi-account column and is rejected).

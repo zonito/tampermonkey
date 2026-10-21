@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.5.1
+// @version      0.5.2
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -403,7 +403,7 @@
 
   // ---------- settings ----------
   var DEFAULTS = { marginBar: true, badges: true, grouping: false, filters: true, orderAges: true,
-    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, density: 'comfortable', dismissedBar: false };
+    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, density: 'comfortable', dismissedBar: false, barCollapsed: false };
   function getSetting(key) {
     try { if (typeof GM_getValue === 'function') { var v = GM_getValue('ibx.' + key, undefined); if (v !== undefined) return v; } } catch (e) { /* silent */ }
     try { var raw = window.localStorage.getItem('ibx.' + key); return raw === null ? DEFAULTS[key] : JSON.parse(raw); } catch (e) { return DEFAULTS[key]; }
@@ -427,6 +427,8 @@
     '.ibx-details{position:fixed;bottom:64px;right:12px;z-index:10001;min-width:300px;background:rgba(20,22,28,.97);color:#e8e8e8;border:1px solid rgba(255,255,255,.2);border-radius:10px;padding:12px 14px;font:12px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.5)}',
     '.ibx-details table{border-collapse:collapse;width:100%}.ibx-details td{padding:2px 6px}.ibx-details td:last-child{text-align:right;font-weight:600}',
     '.ibx-details-cushion{font-size:22px;font-weight:800}',
+    '.ibx-dock{position:fixed;bottom:12px;right:12px;z-index:9999;display:flex;gap:6px;align-items:center;padding:4px 8px;border-radius:999px;background:rgba(20,22,28,.94);border:1px solid rgba(255,255,255,.18);cursor:pointer;font:12px -apple-system,Segoe UI,Roboto,sans-serif}',
+    '.ibx-dock-dot{width:9px;height:9px;border-radius:50%;background:#888;display:inline-block}',
     '.ibx-badge{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font-size:10px;font-weight:700;vertical-align:middle}',
     '.ibx-badge-red{background:#5a1f1f;color:#ff8a80}.ibx-badge-amber{background:#554410;color:#ffd54f}.ibx-badge-green{background:#1e4620;color:#81c784}.ibx-badge-muted{background:#333;color:#bbb;font-weight:400}',
     '.ibx-badge-escalated{background:#8e0000;color:#fff;box-shadow:0 0 0 1px #ff5252 inset}',
@@ -659,10 +661,26 @@
 
   function renderMarginBar(ctx) {
     removeInjected('[data-ibkr-enhancer="bar"]');
-    if (!getSetting('marginBar') || getSetting('dismissedBar')) return;
+    removeInjected('[data-ibkr-enhancer="dock"]');
+    if (!getSetting('marginBar')) { removeInjected('[data-ibkr-enhancer="details"]'); return; }
     if (!ctx) return;
     var hasAny = ctx.headline !== null || Object.keys(ctx.fields).some(function (k) { return ctx.fields[k] !== null; });
     if (!hasAny) return;
+    var cushion0 = cushionPct(ctx.fields['Excess Liquidity'], ctx.headline);
+    var band0 = cushionBand(cushion0);
+    if (getSetting('barCollapsed')) {
+      var dock = el('button', 'ibx-dock'); dock.setAttribute('data-ibkr-enhancer', 'dock');
+      dock.title = 'Expand margin bar';
+      if (cushion0 !== null && band0) {
+        dock.appendChild(el('span', 'ibx-pill-cushion ibx-cushion-' + band0, cushion0.toFixed(1) + '%'));
+      } else {
+        var dot = el('span', 'ibx-dock-dot'); dock.appendChild(dot);
+        dock.appendChild(el('span', '', 'Margin'));
+      }
+      dock.addEventListener('click', function () { setSetting('barCollapsed', false); scheduleRun(); });
+      document.body.appendChild(dock);
+      return;
+    }
     var bar = el('div', 'ibx-bar'); bar.setAttribute('data-ibkr-enhancer', 'bar');
     function pair(label, value) {
       var s = el('span'); var l = el('span', 'ibx-lab', label + ': '); var v = el('span', 'ibx-val', value);
@@ -679,8 +697,8 @@
     details.addEventListener('click', function (ev) { ev.stopPropagation(); toggleDetails(ctx, cushion, band); });
     var gear = el('button', '', '\u2699'); gear.title = 'IBKR Enhancer settings';
     gear.addEventListener('click', togglePanel);
-    var close = el('button', '', '\u00D7'); close.title = 'Dismiss (re-enable in settings)';
-    close.addEventListener('click', function () { setSetting('dismissedBar', true); removeInjected('[data-ibkr-enhancer="details"]'); bar.remove(); });
+    var close = el('button', '', '\u00D7'); close.title = 'Collapse to dock chip';
+    close.addEventListener('click', function () { setSetting('barCollapsed', true); removeInjected('[data-ibkr-enhancer="details"]'); scheduleRun(); });
     bar.appendChild(details); bar.appendChild(gear); bar.appendChild(close);
     document.body.appendChild(bar);
   }
@@ -726,7 +744,7 @@
       var row = el('label'); row.style.display = 'block';
       var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!getSetting(pairDef[0]);
       cb.setAttribute('data-ibkr-enhancer', '1');
-      cb.addEventListener('change', function () { setSetting(pairDef[0], cb.checked); if (pairDef[0] === 'marginBar' && cb.checked) setSetting('dismissedBar', false); scheduleRun(); });
+      cb.addEventListener('change', function () { setSetting(pairDef[0], cb.checked); if (pairDef[0] === 'marginBar' && cb.checked) setSetting('barCollapsed', false); scheduleRun(); });
       row.appendChild(cb); row.appendChild(document.createTextNode(' ' + pairDef[1])); panel.appendChild(row);
     });
     var drow = el('label', '', 'Density: '); drow.style.display = 'block';
