@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-21 (v0.8.3)
+
+- IBKR Enhancer: version bump so Tampermonkey delivers the bottom-left
+  anchoring to installed copies; the settings panel opened from the
+  bar's gear is anchored bottom-left above the bar (`left:16px`,
+  `bottom:64px`), same corner as the bar, Details and dock chip. No
+  behaviour change beyond the panel's corner.
+
 ## 2026-10-21 (v0.8.2)
 
 - IBKR Enhancer margin bar moved to a fixed bottom-left overlay (16px
