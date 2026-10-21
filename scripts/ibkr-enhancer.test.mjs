@@ -189,19 +189,25 @@ test('wing pairing: paired, partial, orphan, orphan-exit, quantity consumption',
   assert.equal(w.byIndex[0].pairs[0].shortIndex, 2);
 });
 
-test('covered-call coverage: full, partial, none, snapshot-only', () => {
-  const eq = { underlying: 'AXTI', type: 'equity', qty: 250 }; // capacity 2
+test('covered-call coverage: position-only green, order-only amber, mixed, neither', () => {
+  const eq = { underlying: 'AXTI', type: 'equity', qty: 2000 }; // capacity 20
   const sc = (qty, strike) => ({ underlying: 'AXTI', type: 'call', qty, strike, expiryISO: '2026-11-20' });
-  let s = P.ccCoverageState(eq, [eq, sc(-2, 80)], null);
-  assert.equal(s.capacity, 2); assert.equal(s.covered, 2); assert.equal(s.state, 'full');
-  s = P.ccCoverageState(eq, [eq, sc(-1, 80)], null);
-  assert.equal(s.covered, 1); assert.equal(s.state, 'partial');
-  s = P.ccCoverageState(eq, [eq, sc(1, 80)], null); // long call does not cover
-  assert.equal(s.covered, 0); assert.equal(s.state, 'none');
-  const snap = { savedAt: '2026-11-13T00:00:00Z', orders: [{ underlying: 'AXTI', type: 'call', action: 'Sell', strike: 85, expiryISO: '2026-12-18', remain: 2, status: 'Submitted' }] };
-  s = P.ccCoverageState(eq, [eq], snap);
-  assert.equal(s.covered, 2); assert.equal(s.orderRemain, 2); assert.equal(s.state, 'full');
-  s = P.ccCoverageState({ underlying: 'AXTI', type: 'equity', qty: 99 }, [eq], snap);
+  const snap = (remain) => ({ savedAt: '2026-11-13T00:00:00Z', orders: [{ underlying: 'AXTI', type: 'call', action: 'Sell', strike: 85, expiryISO: '2026-12-18', limitPrice: 3.5, remain, status: 'Submitted' }] });
+  // position-only: full and partial earn their states from positions alone
+  let s = P.ccCoverageState(eq, [eq, sc(-20, 80)], null);
+  assert.equal(s.state, 'full'); assert.equal(s.posCovered, 20); assert.equal(s.orderRemain, 0);
+  s = P.ccCoverageState(eq, [eq, sc(-10, 80)], null);
+  assert.equal(s.state, 'partial'); assert.equal(s.posCovered, 10);
+  // order-only: NEVER full/green, however large the remain
+  s = P.ccCoverageState(eq, [eq], snap(20));
+  assert.equal(s.state, 'order'); assert.equal(s.posCovered, 0); assert.equal(s.orderRemain, 20);
+  // mixed: 10 position + order for the rest
+  s = P.ccCoverageState(eq, [eq, sc(-10, 80)], snap(10));
+  assert.equal(s.state, 'mixed'); assert.equal(s.posCovered, 10); assert.equal(s.orderRemain, 10);
+  // neither: long call does not cover, no orders
+  s = P.ccCoverageState(eq, [eq, sc(5, 80)], null);
+  assert.equal(s.state, 'none'); assert.equal(s.posCovered, 0); assert.equal(s.orderRemain, 0);
+  s = P.ccCoverageState({ underlying: 'AXTI', type: 'equity', qty: 99 }, [eq], snap(10));
   assert.equal(s.capacity, 0);
 });
 

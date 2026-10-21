@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.5.0
+// @version      0.5.1
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -289,7 +289,7 @@
   function ccCoverageState(equityRow, positions, snapshot) {
     var shares = equityRow && equityRow.qty !== null && equityRow.qty !== undefined ? equityRow.qty : 0;
     var capacity = Math.floor(Math.max(shares, 0) / 100);
-    var covering = [];
+    var covering = [], orderCovering = [];
     var shortContracts = 0;
     (positions || []).forEach(function (r) {
       if (r && r.type === 'call' && r.qty !== null && r.qty !== undefined && r.qty < 0 && r.underlying === equityRow.underlying) {
@@ -301,12 +301,19 @@
     (((snapshot && snapshot.orders) || [])).forEach(function (o) {
       if (o && o.action === 'Sell' && o.type === 'call' && o.underlying === equityRow.underlying && o.remain) {
         orderRemain += o.remain;
-        covering.push({ strike: o.strike, expiryISO: o.expiryISO || null, qty: o.remain, source: 'order' });
+        orderCovering.push({ strike: o.strike, expiryISO: o.expiryISO || null, qty: o.remain, limitPrice: o.limitPrice !== undefined ? o.limitPrice : null, source: 'order' });
       }
     });
-    var covered = shortContracts + orderRemain;
-    var state = capacity > 0 && covered >= capacity ? 'full' : (covered > 0 ? 'partial' : 'none');
-    return { capacity: capacity, covered: covered, shortContracts: shortContracts, orderRemain: orderRemain, covering: covering, state: state };
+    // Only open short call POSITIONS earn green. Working Sell orders are a
+    // separate amber contribution and never turn the chip green alone.
+    var state;
+    if (capacity > 0 && shortContracts >= capacity) state = 'full';
+    else if (shortContracts > 0 && orderRemain > 0) state = 'mixed';
+    else if (shortContracts > 0) state = 'partial';
+    else if (orderRemain > 0) state = 'order';
+    else state = 'none';
+    return { capacity: capacity, covered: shortContracts, posCovered: shortContracts, shortContracts: shortContracts,
+      orderRemain: orderRemain, covering: covering, orderCovering: orderCovering, state: state };
   }
   function defaultFilterState(kind) {
     return kind === 'positions'
@@ -812,8 +819,11 @@
         if (cc.capacity < 1) return;
         var cell = instrumentCell(r._tr, found.headers);
         var coverTxt = cc.covering.length ? cc.covering.map(function (c) { return c.strike + ' ' + (c.expiryISO || '') + ' \u00D7' + c.qty + ' (' + c.source + ')'; }).join('; ') : '';
-        if (cc.state === 'full') addBadge(cell, 'CC \u2713 ' + cc.covered + '/' + cc.capacity, 'ibx-badge-green', 'Covering calls: ' + coverTxt);
-        else if (cc.state === 'partial') addBadge(cell, 'CC ' + cc.covered + '/' + cc.capacity, 'ibx-badge-amber', 'Covering calls: ' + coverTxt);
+        var orderTxt = cc.orderCovering.length ? cc.orderCovering.map(function (c) { return c.strike + ' ' + (c.expiryISO || '') + ' @ ' + (c.limitPrice !== null && c.limitPrice !== undefined ? c.limitPrice : 'n/a') + ' \u00D7' + c.qty; }).join('; ') : '';
+        if (cc.state === 'full') addBadge(cell, 'CC \u2713 ' + cc.posCovered + '/' + cc.capacity, 'ibx-badge-green', 'Covering calls: ' + coverTxt);
+        else if (cc.state === 'mixed') addBadge(cell, 'CC \u2713 ' + cc.posCovered + '/' + cc.capacity + ' \u00B7 order ' + cc.orderRemain, 'ibx-badge-amber', 'Covering calls: ' + coverTxt + ' | Working Sell orders: ' + orderTxt);
+        else if (cc.state === 'partial') addBadge(cell, 'CC ' + cc.posCovered + '/' + cc.capacity, 'ibx-badge-amber', 'Covering calls: ' + coverTxt);
+        else if (cc.state === 'order') addBadge(cell, 'CC order ' + cc.orderRemain + '/' + cc.capacity + ' working', 'ibx-badge-amber', 'Working Sell call orders: ' + orderTxt);
         else addBadge(cell, 'No CC \u00B7 up to ' + cc.capacity, 'ibx-badge-muted', 'Available contracts: ' + cc.capacity + ' (no short calls or working Sell call orders)');
       });
     }

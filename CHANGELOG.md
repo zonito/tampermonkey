@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-21 (v0.5.1)
+
+- IBKR Enhancer CC chip fix: covered-call coverage sources split. Only
+  open short call positions render green; working Sell orders render a
+  separate amber "CC order n/N working" (or combined) state, never green.
+
 ## 2026-10-21 (v0.5.0)
 
 - IBKR Enhancer: anchor accepts ID + currency + non-clashing money without

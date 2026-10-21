@@ -138,12 +138,14 @@ New settings toggle: "Wing pairing chips".
 
 ## Phase 2C: covered-call chips (v0.4.0)
 
-Equity rows show covered-call coverage: capacity = floor(shares / 100),
-coverage = short call contracts on the underlying plus remain on working
-Sell call orders in the orders snapshot. Green "CC ✓ n/N" at full coverage,
-amber "CC n/N" partial, muted "No CC · up to N" at zero, with covering
-strikes/expiries (or available contracts) in the tooltip. Equities under
-100 shares get no chip. Pure function `ccCoverageState`. New settings
+Equity rows show covered-call coverage with the two sources split:
+capacity = floor(shares / 100); only open short call POSITIONS earn green
+"CC ✓ n/N" at full coverage (amber "CC n/N" position-partial). Working
+Sell call orders in the snapshot render a separate amber state ("CC order
+n/N working", or "CC ✓ p/N · order o" when combined with a position
+partial) and never turn the chip green; their tooltip names strike, expiry
+and limit. No position and no order: muted "No CC · up to N". Equities
+under 100 shares get no chip. Pure function `ccCoverageState`. Settings
 toggle: "Covered-call chips".
 
 ## Phase 2 candidates (not built)
