@@ -13,6 +13,13 @@ to the user's own local Kubera at `http://127.0.0.1:8000`; see below.
 
 ## Account-values sync (v0.9.0, any page with a margin-bar read, default off)
 
+Feed allowlist (v0.9.1): the gear-panel setting "Feed accounts
+(comma-separated account ids)" defaults to the two margin accounts.
+Both Kubera senders — account-values sync and orders export — send
+only allowlisted account ids; any other account is silently not
+sent (no export, no toast, no status change). Kubera enforces the
+same list server-side.
+
 Settings toggle "Sync account values to Kubera", independent of the
 orders-export toggle, sharing the same ingest-token field. The sender
 reuses the margin bar's own parsed read (no new scraping): alias,

@@ -14,7 +14,7 @@ assert.ok(start >= 0 && end > start, 'parser markers present');
 const parserSrc = src.slice(start, end);
 const mod = { exports: {} };
 // The parser block references `module` only via the guard below it; evaluate block + export line.
-new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, parseInstrumentSearch, buildPositionsSnapshot, findShortPosition, ticketFillPlan, positionsToCsv, ordersToCsv, formatLondonCapturedAt, currencyFromText, brokerOrderFromParsed, exportedOrdersComplete, buildBrokerSnapshots, buildAccountSnapshot, accountSyncFingerprint, accountSyncDecision };')(mod, mod.exports);
+new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, parseInstrumentSearch, buildPositionsSnapshot, findShortPosition, ticketFillPlan, positionsToCsv, ordersToCsv, formatLondonCapturedAt, currencyFromText, brokerOrderFromParsed, exportedOrdersComplete, buildBrokerSnapshots, buildAccountSnapshot, accountSyncFingerprint, accountSyncDecision, parseFeedAccounts, isFeedAccountAllowed };')(mod, mod.exports);
 const P = mod.exports;
 
 const H = ['Instrument', 'Position', 'Change %', 'Cost Basis', 'Market Value', 'Last', 'Avg Price', 'Daily P&L', 'Unrealized P&L', 'Delta', '52wk IV Rank', '52wk IV Pctl', 'P/E', 'Forward P/E', 'Beta', 'Market Cap', 'Social Sentiment Score', 'Social Sentiment Score Change'];
@@ -307,6 +307,24 @@ test('account sync throttle: 60s gate, heartbeat, account change', () => {
   assert.equal(P.accountSyncDecision(state, snap(50000), t0 + 301000).reason, 'heartbeat'); // unchanged still pulses at 5 min
   const other = { ...snap(50000), account_id: 'FAKE-B2' };
   assert.equal(P.accountSyncDecision(state, other, t0 + 10000).reason, 'account_change'); // immediate on switch
+});
+
+
+test('feed account allowlist gates sync decision and orders builder', () => {
+  assert.deepEqual(P.parseFeedAccounts(' FAKE-A1, FAKE-B2 ,'), ['FAKE-A1', 'FAKE-B2']);
+  assert.equal(P.isFeedAccountAllowed('FAKE-A1', 'FAKE-A1,FAKE-B2'), true);
+  assert.equal(P.isFeedAccountAllowed('FAKE-C3', 'FAKE-A1,FAKE-B2'), false);
+  const snap = (id) => ({ account_id: id, values: { net_liquidation: 1 } });
+  const state = { lastAttemptAt: 0, lastSentAt: 0, lastSentFingerprint: '', lastSentAccount: null };
+  assert.deepEqual(P.accountSyncDecision(state, snap('FAKE-C3'), 1000, 'FAKE-A1,FAKE-B2'), { send: false, reason: 'not_in_scope' });
+  assert.equal(P.accountSyncDecision(state, snap('FAKE-A1'), 1000, 'FAKE-A1,FAKE-B2').send, true);
+  const OH = ['', 'Orders', 'Action', 'Filled/Remain', 'Status', 'Price', 'Account', 'Order id', '', ''];
+  const mkRow = (account, id) => P.parseOrderRow(OH, ['', "ACME Nov20'26 35 Put\nACME Nov20'26 35 Put Limit 0.60, GTC", 'Buy', '0/2', 'Submitted 10/12/2026, 9:30 AM', '—', account, id, '', ''], id);
+  const rows = [mkRow('FAKE-A1', '1001'), mkRow('FAKE-C3', '3001')];
+  const filtered = P.buildBrokerSnapshots(rows, { capturedAt: '2026-10-21T10:00:00+01:00', complete: true, feedAccounts: 'FAKE-A1,FAKE-B2' });
+  assert.deepEqual(filtered.map((s) => s.account_id), ['FAKE-A1']); // non-allowlisted group dropped
+  const unfiltered = P.buildBrokerSnapshots(rows, { capturedAt: '2026-10-21T10:00:00+01:00', complete: true });
+  assert.equal(unfiltered.length, 2); // no allowlist configured -> unchanged
 });
 
 test('duplicate strike detection + CSV shape', () => {

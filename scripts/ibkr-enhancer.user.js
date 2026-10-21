@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.9.0
+// @version      0.9.1
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders. Optional: exports open orders to local Kubera only.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -482,6 +482,15 @@
     if (totalHint === null || totalHint === undefined || !isFinite(totalHint)) return true;
     return !(totalHint > renderedCount);
   }
+  function parseFeedAccounts(setting) {
+    var parts = Array.isArray(setting) ? setting : String(setting || '').split(',');
+    return parts.map(function (p) { return String(p).trim(); }).filter(function (p) { return !!p; });
+  }
+  function isFeedAccountAllowed(accountId, allowlist) {
+    if (allowlist === undefined || allowlist === null) return true;
+    var list = parseFeedAccounts(allowlist);
+    return list.indexOf(String(accountId || '').trim()) !== -1;
+  }
   function buildBrokerSnapshots(rows, opts) {
     opts = opts || {};
     var groups = {}, order = [];
@@ -489,6 +498,7 @@
       if (!isOpenOrder(r)) return;
       var accountId = r.account ? String(r.account).trim() : '';
       if (!accountId) return;
+      if (!isFeedAccountAllowed(accountId, opts.feedAccounts)) return;
       if (!groups[accountId]) { groups[accountId] = []; order.push(accountId); }
       var raw = r._raw !== undefined ? r._raw : (r._cells ? r._cells.join('\n') : r.instrument);
       groups[accountId].push(brokerOrderFromParsed(r, raw));
@@ -538,8 +548,9 @@
       v.net_liquidation, v.excess_liquidity, v.buying_power, v.maintenance_margin,
       v.unrealized_pnl, v.realized_pnl, v.settled_cash].join('|');
   }
-  function accountSyncDecision(state, snapshot, nowMs) {
+  function accountSyncDecision(state, snapshot, nowMs, allowlist) {
     if (!snapshot || !snapshot.account_id) return { send: false, reason: 'no_account' };
+    if (!isFeedAccountAllowed(snapshot.account_id, allowlist)) return { send: false, reason: 'not_in_scope' };
     var now = typeof nowMs === 'number' ? nowMs : Date.now();
     var s = state || {};
     if (!s.lastSentAt) return { send: true, reason: 'first' };
@@ -564,13 +575,14 @@
     formatLondonCapturedAt: formatLondonCapturedAt, currencyFromText: currencyFromText,
     brokerOrderFromParsed: brokerOrderFromParsed, exportedOrdersComplete: exportedOrdersComplete,
     buildBrokerSnapshots: buildBrokerSnapshots,
+    parseFeedAccounts: parseFeedAccounts, isFeedAccountAllowed: isFeedAccountAllowed,
     buildAccountSnapshot: buildAccountSnapshot, accountSyncFingerprint: accountSyncFingerprint,
     accountSyncDecision: accountSyncDecision };
   if (typeof module !== 'undefined' && module.exports) module.exports = PARSER;
 
   // ---------- settings ----------
   var DEFAULTS = { marginBar: true, badges: true, grouping: false, filters: true, orderAges: true,
-    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, ticketFill: true, exportOrders: false, accountSync: false, kuberaIngestToken: '', density: 'comfortable', dismissedBar: false, barCollapsed: false };
+    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, ticketFill: true, exportOrders: false, accountSync: false, kuberaIngestToken: '', feedAccounts: 'U19377323,U26948221', density: 'comfortable', dismissedBar: false, barCollapsed: false };
   function getSetting(key) {
     try { if (typeof GM_getValue === 'function') { var v = GM_getValue('ibx.' + key, undefined); if (v !== undefined) return v; } } catch (e) { /* silent */ }
     try { var raw = window.localStorage.getItem('ibx.' + key); return raw === null ? DEFAULTS[key] : JSON.parse(raw); } catch (e) { return DEFAULTS[key]; }
@@ -941,6 +953,12 @@
     tokenInput.placeholder = 'Stored locally only';
     tokenInput.addEventListener('change', function () { setSetting('kuberaIngestToken', tokenInput.value.trim()); });
     trow.appendChild(tokenInput); panel.appendChild(trow);
+    var frow = el('label', '', 'Feed accounts (comma-separated account ids): '); frow.style.display = 'block';
+    var feedInput = document.createElement('input'); feedInput.type = 'text'; feedInput.autocomplete = 'off';
+    feedInput.setAttribute('data-ibkr-enhancer', '1');
+    feedInput.value = getSetting('feedAccounts') || '';
+    feedInput.addEventListener('change', function () { setSetting('feedAccounts', feedInput.value.trim()); });
+    frow.appendChild(feedInput); panel.appendChild(frow);
     var syncLine = el('div', '', accountSyncStatusText());
     syncLine.setAttribute('data-ibkr-enhancer', 'sync-status');
     syncLine.style.opacity = '.75';
@@ -1374,7 +1392,7 @@
       Object.keys(ctx.fields || {}).some(function (k) { return ctx.fields[k] !== null && ctx.fields[k] !== undefined; });
     if (!hasAny) return;
     var snapshot = buildAccountSnapshot(ctx, formatLondonCapturedAt(new Date()));
-    var decision = accountSyncDecision(accountSyncState, snapshot, Date.now());
+    var decision = accountSyncDecision(accountSyncState, snapshot, Date.now(), getSetting('feedAccounts'));
     if (!decision.send) return;
     var now = Date.now();
     accountSyncState.lastAttemptAt = now;
@@ -1402,7 +1420,7 @@
     var capturedAt = formatLondonCapturedAt(new Date());
     var openRows = rows.filter(isOpenOrder);
     var complete = exportedOrdersComplete(rows.length, pagerTotalHint(lastOrdersFound));
-    var snapshots = buildBrokerSnapshots(rows, { capturedAt: capturedAt, complete: complete, ingestSource: 'ibkr-enhancer', accountLabels: {} });
+    var snapshots = buildBrokerSnapshots(rows, { capturedAt: capturedAt, complete: complete, ingestSource: 'ibkr-enhancer', accountLabels: {}, feedAccounts: getSetting('feedAccounts') });
     // The panel alias names only the account in view; label it solely
     // when the table holds that one account, never guess the others.
     if (snapshots.length === 1 && lastAccountAlias) snapshots[0].account_label = lastAccountAlias;

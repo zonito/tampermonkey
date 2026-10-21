@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-21 (v0.9.1)
+
+- IBKR Enhancer feed allowlist: new gear-panel setting "Feed accounts
+  (comma-separated account ids)" (defaults to the two margin
+  accounts). The account-values sender and the orders exporter send
+  only allowlisted account ids; other accounts are silently not sent
+  (no export, no toast, no status noise).
+
+
 ## 2026-10-21 (v0.9.0)
 
 - IBKR Enhancer account-values sync (default off, independent of the
