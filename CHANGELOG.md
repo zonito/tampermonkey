@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-21 (v0.8.1)
+
+- IBKR Enhancer toolbar polish: Copy and Export are icon-only pill
+  buttons at the right end of the filter row on Orders (Copy also on
+  Positions), with tooltips/`aria-label`s, in-flight pulse and
+  transient check/X icon states. Export feedback is now a single
+  bottom-right toast (success/failure, ~6s auto-dismiss, click/close
+  dismiss, one at a time); the persistent export status line is gone.
+  Auto-export stability now holds by row count over 500 ms instead of
+  requiring a quiet page, so re-renders no longer starve the export.
+
 ## 2026-10-21 (v0.8.0)
 
 - IBKR Enhancer Kubera export (Orders page, default off): stable-count

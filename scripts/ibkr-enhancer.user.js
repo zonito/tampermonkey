@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.8.0
+// @version      0.8.1
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders. Optional: exports open orders to local Kubera only.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -561,6 +561,16 @@
     '.ibx-filterbar input[type=text]:focus{border-color:#0b5cad;outline:none}',
     '.ibx-copy{display:inline-flex;gap:6px;align-items:center;margin:4px;border:1px solid rgba(128,128,128,.55);background:transparent;color:inherit;border-radius:999px;padding:3px 10px;cursor:pointer;transition:transform .12s ease}',
     '.ibx-copy:hover{transform:translateY(-1px)}',
+    '.ibx-toolbar-actions{margin-left:auto;display:inline-flex;gap:8px;align-items:center}',
+    '.ibx-icon-btn{display:inline-flex!important;align-items:center;justify-content:center;width:32px;min-width:32px;height:26px;margin:0!important;padding:3px 8px!important;line-height:1}',
+    '.ibx-icon-btn svg{display:block;flex:none}',
+    '@keyframes ibx-pulse{0%,100%{opacity:1}50%{opacity:.4}}',
+    '.ibx-icon-btn.ibx-exporting{animation:ibx-pulse 1s ease-in-out infinite;cursor:wait}',
+    '.ibx-toast{position:fixed;right:16px;bottom:16px;z-index:10003;max-width:min(440px,calc(100vw - 32px));padding:10px 38px 10px 12px;border:1px solid rgba(255,255,255,.22);border-left:4px solid #888;border-radius:8px;background:rgba(20,22,28,.97);color:#e8e8e8;font:12px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.5);cursor:pointer;opacity:0;transform:translateY(8px);transition:opacity .18s ease,transform .18s ease}',
+    '.ibx-toast.ibx-toast-show{opacity:1;transform:translateY(0)}',
+    '.ibx-toast.ibx-toast-success{border-left-color:#43a047}',
+    '.ibx-toast.ibx-toast-failure{border-left-color:#ef5350}',
+    '.ibx-toast-close{position:absolute!important;top:4px;right:6px;width:22px;height:22px;padding:0!important;border:0!important;border-radius:50%!important;background:transparent!important;color:inherit!important;opacity:.7;cursor:pointer;font-size:16px;line-height:1}',
     '.ibx-filterbar button,.ibx-bar button{cursor:pointer;border-radius:6px;padding:3px 8px}',
     '.ibx-flabel{opacity:.6;font-weight:600}',
     '.ibx-seg{display:inline-flex;border:1px solid rgba(128,128,128,.55);border-radius:999px;overflow:hidden}',
@@ -1001,8 +1011,13 @@
       });
     }
     if (getSetting('grouping')) applyGrouping(found, rows);
-    if (getSetting('filters')) renderFilterBar(found, rows, 'positions'); else clearFilterState(found);
-    if (getSetting('copyButtons')) renderCopyButton(found, function () { return positionsToCsv(rows, new Date().toISOString()); }, 'Copy positions as CSV');
+    var positionsBar = null;
+    if (getSetting('filters')) positionsBar = renderFilterBar(found, rows, 'positions');
+    else if (getSetting('copyButtons')) {
+      clearFilterState(found);
+      positionsBar = renderFilterBar(found, rows, 'positions', false);
+    } else clearFilterState(found);
+    if (getSetting('copyButtons')) renderCopyButton(found, function () { return positionsToCsv(rows, new Date().toISOString()); }, 'Copy positions as CSV', positionsBar);
     if (getSetting('readability')) applyReadability(found.table);
     return rows;
   }
@@ -1062,10 +1077,50 @@
     Array.prototype.forEach.call(found.table.querySelectorAll('tbody tr'), function (tr) { tr.style.display = ''; });
   }
 
-  function renderFilterBar(found, rows, kind) {
+  var CLIPBOARD_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>';
+  var UPLOAD_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 15V4"/><path d="m7 9 5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>';
+  var CHECK_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+  var X_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
+  function toolbarActions(bar) {
+    if (!bar) return null;
+    var actions = bar.querySelector('.ibx-toolbar-actions');
+    if (!actions) {
+      actions = el('span', 'ibx-toolbar-actions');
+      bar.appendChild(actions);
+    }
+    return actions;
+  }
+  function showTransientIcon(button, icon, delay) {
+    if (!button) return;
+    if (button._ibxIconTimer) clearTimeout(button._ibxIconTimer);
+    button.innerHTML = icon;
+    button._ibxIconTimer = setTimeout(function () {
+      button.innerHTML = button._ibxBaseIcon || '';
+      button._ibxIconTimer = null;
+    }, delay || 2000);
+  }
+
+  function renderFilterBar(found, rows, kind, includeControls) {
+    var withControls = includeControls !== false;
     var existing = found.table.parentElement && found.table.parentElement.querySelector('[data-ibkr-enhancer="filterbar"]');
-    if (existing) { var ex = existing.querySelector('input[type=text]'); if (ex) { activeFilterInput = ex; ensureSlashListener(); } return; }
+    if (existing && withControls && !existing.querySelector('input[type=text]')) {
+      existing.remove();
+      existing = null;
+    }
+    if (existing && !withControls && existing.querySelector('input[type=text]')) {
+      existing.remove();
+      existing = null;
+    }
+    if (existing) {
+      var ex = existing.querySelector('input[type=text]');
+      if (ex) { activeFilterInput = ex; ensureSlashListener(); }
+      return existing;
+    }
     var bar = el('div', 'ibx-filterbar'); bar.setAttribute('data-ibkr-enhancer', 'filterbar');
+    if (!withControls) {
+      if (found.table.parentElement) found.table.parentElement.insertBefore(bar, found.table);
+      return bar;
+    }
     bar.appendChild(el('span', 'ibx-flabel', 'Filters'));
     var input = document.createElement('input'); input.type = 'text'; input.placeholder = 'Filter instrument / underlying ( / )';
     input.setAttribute('data-ibkr-enhancer', '1');
@@ -1124,29 +1179,28 @@
     if (found.table.parentElement) found.table.parentElement.insertBefore(bar, found.table);
     activeFilterInput = input;
     ensureSlashListener();
+    return bar;
   }
 
-  function renderCopyButton(found, makeCsv, label) {
-    if (found.table.parentElement && found.table.parentElement.querySelector('[data-ibkr-enhancer="copy"]')) return;
-    var b = el('button', 'ibx-pill ibx-copy'); b.setAttribute('data-ibkr-enhancer', 'copy');
-    b.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span></span>';
-    var span = b.querySelector('span'); span.textContent = label;
-    var revertTimer = null;
+  function renderCopyButton(found, makeCsv, label, bar) {
+    var actions = toolbarActions(bar);
+    if (!actions || actions.querySelector('[data-ibkr-enhancer="copy"]')) return;
+    var b = el('button', 'ibx-pill ibx-icon-btn'); b.setAttribute('data-ibkr-enhancer', 'copy');
+    b.type = 'button';
+    b.title = label;
+    b.setAttribute('aria-label', label);
+    b._ibxBaseIcon = CLIPBOARD_ICON;
+    b.innerHTML = CLIPBOARD_ICON;
     b.addEventListener('click', function () {
       var csv = makeCsv();
-      function flip(text) {
-        span.textContent = text;
-        if (revertTimer) clearTimeout(revertTimer);
-        revertTimer = setTimeout(function () { span.textContent = label; }, 1500);
-      }
       try {
         var pending = navigator.clipboard.writeText(csv);
         if (pending && typeof pending.then === 'function') {
-          pending.then(function () { log('copied CSV (' + csv.split('\n').length + ' lines)'); flip('Copied \u2713'); }, function (err) { log('clipboard failed', err && err.message); flip('Copy failed'); });
-        } else flip('Copied \u2713');
-      } catch (e) { log('clipboard failed', e && e.message); flip('Copy failed'); }
+          pending.then(function () { log('copied CSV (' + csv.split('\n').length + ' lines)'); showTransientIcon(b, CHECK_ICON, 1500); }, function (err) { log('clipboard failed', err && err.message); showTransientIcon(b, X_ICON, 1500); });
+        } else showTransientIcon(b, CHECK_ICON, 1500);
+      } catch (e) { log('clipboard failed', e && e.message); showTransientIcon(b, X_ICON, 1500); }
     });
-    if (found.table.parentElement) found.table.parentElement.insertBefore(b, found.table);
+    actions.appendChild(b);
   }
 
   function applyReadability(table) {
@@ -1161,7 +1215,7 @@
   // ---- Kubera export: Orders page only, GM_xmlhttpRequest only ----
   var KUBERA_SNAPSHOT_URL = 'http://127.0.0.1:8000/api/v1/broker-orders/snapshot';
   var lastOrdersFound = null;
-  var exportState = { stableTimer: null, inFlight: false, lastFingerprint: '' };
+  var exportState = { stableTimer: null, stableCount: null, stableSince: 0, inFlight: false, lastFingerprint: '', attemptedFingerprint: '' };
   function pagerTotalHint(found) {
     try {
       var host = found.table.parentElement;
@@ -1172,16 +1226,47 @@
     } catch (e) { /* silent */ }
     return null;
   }
-  function setExportStatus(text) {
-    if (!lastOrdersFound || !lastOrdersFound.table.parentElement) return;
-    var host = lastOrdersFound.table.parentElement;
-    var line = host.querySelector('[data-ibkr-enhancer="export-status"]');
-    if (!line) {
-      line = el('div', 'ibx-summary', '');
-      line.setAttribute('data-ibkr-enhancer', 'export-status');
-      host.insertBefore(line, lastOrdersFound.table);
-    }
-    line.textContent = text;
+  var toastTimer = null;
+  function dismissToast() {
+    if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+    Array.prototype.forEach.call(document.querySelectorAll('[data-ibkr-enhancer="toast"]'), function (node) { node.remove(); });
+  }
+  function showToast(message, kind) {
+    if (allOff()) return;
+    injectStyle();
+    dismissToast();
+    var toast = el('div', 'ibx-toast ibx-toast-' + (kind === 'failure' ? 'failure' : 'success'));
+    toast.setAttribute('data-ibkr-enhancer', 'toast');
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+    toast.appendChild(el('span', '', message));
+    var close = el('button', 'ibx-toast-close', '\u00D7');
+    close.type = 'button';
+    close.title = 'Dismiss';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.addEventListener('click', function (event) { event.stopPropagation(); dismissToast(); });
+    toast.appendChild(close);
+    toast.addEventListener('click', dismissToast);
+    document.body.appendChild(toast);
+    setTimeout(function () { toast.classList.add('ibx-toast-show'); }, 0);
+    toastTimer = setTimeout(dismissToast, 6000);
+  }
+  function currentExportButton() {
+    return document.querySelector('[data-ibkr-enhancer="export"]');
+  }
+  function setExportBusy(busy) {
+    var button = currentExportButton();
+    if (!button) return;
+    if (button._ibxIconTimer) { clearTimeout(button._ibxIconTimer); button._ibxIconTimer = null; }
+    button.innerHTML = button._ibxBaseIcon || UPLOAD_ICON;
+    button.disabled = !!busy;
+    button.classList.toggle('ibx-exporting', !!busy);
+  }
+  function shortExportReason(result) {
+    var reason = '';
+    if (result) reason = result.detail || (result.status ? 'HTTP ' + result.status : '') || result.message || '';
+    reason = String(reason || 'network error').replace(/\s+/g, ' ').trim();
+    return reason.length > 60 ? reason.slice(0, 60) : reason;
   }
   function kuberaPost(snapshot, token) {
     return new Promise(function (resolve) {
@@ -1194,7 +1279,8 @@
           onload: function (res) {
             var body = null;
             try { body = JSON.parse(res.responseText || 'null'); } catch (e) { body = null; }
-            resolve({ ok: res.status >= 200 && res.status < 300, status: res.status, body: body });
+            var ok = res.status >= 200 && res.status < 300;
+            resolve({ ok: ok, status: res.status, body: body, detail: ok ? '' : 'HTTP ' + res.status });
           },
           onerror: function () { resolve({ ok: false, detail: 'network error' }); },
           ontimeout: function () { resolve({ ok: false, detail: 'timeout' }); }
@@ -1218,24 +1304,28 @@
     var fingerprint = JSON.stringify(snapshots.map(function (s) {
       return [s.account_id, s.complete, s.orders.map(function (o) { return [o.order_id, o.limit_price, o.qty_remain, o.status].join(':'); }).join(',')].join('|');
     }));
-    if (!force && fingerprint === exportState.lastFingerprint) return;
+    if (!force && (fingerprint === exportState.lastFingerprint || fingerprint === exportState.attemptedFingerprint)) return;
     var token = String(getSetting('kuberaIngestToken') || '').trim();
-    if (!snapshots.length) { setExportStatus('Kubera export: no open orders to send.'); return; }
-    exportState.inFlight = true;
+    if (!snapshots.length) return;
     if (!token) {
-      exportState.inFlight = false;
+      exportState.attemptedFingerprint = fingerprint;
       try { setSetting('kuberaPendingSnapshots', snapshots); } catch (e) { /* silent */ }
-      setExportStatus('Kubera export needs an ingest token (gear panel).');
+      showToast('Export failed: missing ingest token. Will retry on next page load.', 'failure');
       return;
     }
+    exportState.inFlight = true;
+    setExportBusy(true);
     Promise.all(snapshots.map(function (s) { return kuberaPost(s, token); })).then(function (results) {
       exportState.inFlight = false;
+      setExportBusy(false);
       var failed = results.filter(function (r) { return !r.ok; });
       var hhmm = capturedAt.slice(11, 16);
       if (failed.length) {
+        exportState.attemptedFingerprint = fingerprint;
         try { setSetting('kuberaPendingSnapshots', snapshots); } catch (e) { /* silent */ }
-        setExportStatus('Kubera export failed (' + hhmm + '); queued, will retry on next page load.');
-        log('Kubera export failed', failed[0].status || failed[0].detail || '');
+        var reason = shortExportReason(failed[0]);
+        showToast('Export failed: ' + reason + '. Will retry on next page load.', 'failure');
+        log('Kubera export failed', reason);
         return;
       }
       exportState.lastFingerprint = fingerprint;
@@ -1247,27 +1337,57 @@
         changed += (diff.changed || []).length;
         gone += (diff.gone || []).length;
       });
-      setExportStatus('Exported ' + hhmm + ', ' + exportedCount + ' orders, +' + added + ' new, ~' + changed + ' changed, \u2212' + gone + ' gone');
+      showToast('Exported ' + hhmm + ', ' + exportedCount + ' orders, +' + added + ' new, ~' + changed + ' changed, -' + gone + ' gone', 'success');
+      var button = currentExportButton();
+      if (button) showTransientIcon(button, CHECK_ICON, 2000);
+    }).catch(function (err) {
+      exportState.inFlight = false;
+      setExportBusy(false);
+      exportState.attemptedFingerprint = fingerprint;
+      try { setSetting('kuberaPendingSnapshots', snapshots); } catch (e) { /* silent */ }
+      var reason = shortExportReason(err);
+      showToast('Export failed: ' + reason + '. Will retry on next page load.', 'failure');
+      log('Kubera export failed', reason);
     });
   }
   function scheduleStableExport() {
     if (!getSetting('exportOrders')) return;
-    if (exportState.stableTimer) clearTimeout(exportState.stableTimer);
-    var countAtCheck = (liveRows.orders || []).length;
+    var count = (liveRows.orders || []).length;
+    var now = Date.now();
+    if (exportState.stableCount !== count) {
+      exportState.stableCount = count;
+      exportState.stableSince = now;
+    }
+    if (exportState.stableTimer) return;
+    var delay = Math.max(0, 500 - (now - exportState.stableSince));
     exportState.stableTimer = setTimeout(function () {
       exportState.stableTimer = null;
-      // Second check 500ms later: export only if the count held.
-      if ((liveRows.orders || []).length === countAtCheck) doExportOrders(false);
-    }, 500);
+      // Second check: export only when the same count has held for 500ms.
+      // Re-renders alone do not restart the clock; a count change does.
+      if ((liveRows.orders || []).length === exportState.stableCount) doExportOrders(false);
+      else scheduleStableExport();
+    }, delay);
   }
-  function renderExportButton(found) {
-    if (!getSetting('exportOrders')) return;
-    if (found.table.parentElement && found.table.parentElement.querySelector('[data-ibkr-enhancer="export"]')) return;
-    var b = el('button', 'ibx-pill ibx-copy', 'Export now');
+  function renderExportButton(found, bar) {
+    if (!getSetting('exportOrders')) {
+      removeInjected('[data-ibkr-enhancer="export"]');
+      return;
+    }
+    var actions = toolbarActions(bar);
+    if (!actions || actions.querySelector('[data-ibkr-enhancer="export"]')) return;
+    var b = el('button', 'ibx-pill ibx-icon-btn');
     b.setAttribute('data-ibkr-enhancer', 'export');
+    b.type = 'button';
+    b.title = 'Export orders to Kubera now';
+    b.setAttribute('aria-label', 'Export orders to Kubera now');
+    b._ibxBaseIcon = UPLOAD_ICON;
+    b.innerHTML = UPLOAD_ICON;
+    if (exportState.inFlight) {
+      b.disabled = true;
+      b.classList.add('ibx-exporting');
+    }
     b.addEventListener('click', function () { doExportOrders(true); });
-    if (found.table.parentElement) found.table.parentElement.insertBefore(b, found.table);
-    setExportStatus('Kubera export ready.');
+    actions.appendChild(b);
   }
 
   function enhanceOrders(found) {
@@ -1297,14 +1417,16 @@
       s.setAttribute('data-ibkr-enhancer', 'summary');
       found.table.parentElement.insertBefore(s, found.table);
     }
-    if (getSetting('filters')) renderFilterBar(found, rows, 'orders'); else clearFilterState(found);
-    if (getSetting('copyButtons')) renderCopyButton(found, function () { return ordersToCsv(rows, new Date().toISOString()); }, 'Copy orders as CSV');
+    var ordersBar = null;
+    if (getSetting('filters')) ordersBar = renderFilterBar(found, rows, 'orders');
+    else if (getSetting('copyButtons') || getSetting('exportOrders')) {
+      clearFilterState(found);
+      ordersBar = renderFilterBar(found, rows, 'orders', false);
+    } else clearFilterState(found);
+    removeInjected('[data-ibkr-enhancer="export-status"]');
+    if (getSetting('copyButtons')) renderCopyButton(found, function () { return ordersToCsv(rows, new Date().toISOString()); }, 'Copy orders as CSV', ordersBar);
     if (getSetting('readability')) applyReadability(found.table);
-    if (!getSetting('exportOrders')) {
-      removeInjected('[data-ibkr-enhancer="export"]');
-      removeInjected('[data-ibkr-enhancer="export-status"]');
-    }
-    renderExportButton(found);
+    renderExportButton(found, ordersBar);
     scheduleStableExport();
     return rows;
   }

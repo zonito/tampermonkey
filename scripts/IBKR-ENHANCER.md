@@ -11,7 +11,7 @@ a native action button.** Copy buttons write CSV to the clipboard only.
 The only network call anywhere is the opt-in export of parsed open orders
 to the user's own local Kubera at `http://127.0.0.1:8000`; see below.
 
-## Kubera export (v0.8.0, Orders page only, default off)
+## Kubera export (v0.8.0, Orders page only, default off; toolbar/toast polish v0.8.1)
 
 Settings toggle "Export orders to Kubera" plus a "Kubera ingest token"
 field in the gear panel (stored via `GM_setValue`, never hard-coded).
@@ -25,11 +25,18 @@ Completeness: a pager showing more rows than rendered, or rows the
 builder could not group, means `complete: false`; the enhancer never
 guesses. The saved Orders fixture has no pager and renders all 23 rows,
 so it exports `complete: true`; the live-page pager check is still owed.
-Feedback is one line above the table (`Exported HH:MM, N orders, +a new,
-~b changed, −c gone` from Kubera's diff); on failure one muted line,
-the latest snapshot is queued in `GM_setValue` and retried on the next
-page load. A manual "Export now" button forces a send. No alerts, no
-retries in a loop, never blocking the page.
+Feedback is a single bottom-right toast, never a persistent page line:
+success reads `Exported HH:MM, N orders, +a new, ~b changed, -c gone`
+from Kubera's diff; failure reads `Export failed: <reason>. Will retry
+on next page load.` and the latest snapshot stays queued in
+`GM_setValue`. The toast replaces any current toast, auto-dismisses
+after about 6 seconds, and dismisses on click or its close button.
+Copy and Export are icon-only pill buttons at the right end of the
+filter row (clipboard and upload icons; full names in `title` and
+`aria-label`). Export pulses while a POST is in flight and shows a
+check for about 2 seconds after success; Copy shows a check on
+clipboard success and an X on rejection. No alerts, no retries in a
+loop, never blocking the page.
 
 ## What it does
 
