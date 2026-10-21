@@ -15,10 +15,13 @@ CSV to the clipboard only.
   (account-header headline value), Excess Liquidity, Buying Power, Maintenance
   Margin, Unrealized P&L, plus cushion % = Excess Liquidity / NLV (green
   > 20%, amber 10–20%, red < 10%). Displays the account alias it read.
-  Fail-safe: if the exact header pattern (alias + account ID + currency ->
-  value -> signed day change) does not match, or the summary list does not
-  share a container with that header, it shows the labelled fields only and
-  no cushion.
+  Fail-safe: the headline is anchored on the sidebar account item (the
+  smallest label ancestor whose subtree also contains the account-ID token);
+  it requires ID + currency + signed change in the item header before the
+  summary list, rejects any candidate equal to a labelled field value, and
+  on any mismatch shows the labelled fields only and no cushion. If the
+  alias cannot be read, the bar shows the masked account ID, never
+  "unknown". The bar sits bottom-right, clear of the top-right nav icons.
 - **Positions badges**: DTE from the instrument expiry (Europe/London; red
   <= 7d, amber <= 21d), ITM vs the held underlying's Last (no badge and an
   "underlying price unavailable" tooltip when the underlying is not held),

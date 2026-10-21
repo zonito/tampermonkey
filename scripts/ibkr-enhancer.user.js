@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.1.0
+// @version      0.1.1
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -270,7 +270,7 @@
 
   var CSS = [
     '[data-ibkr-enhancer]{box-sizing:border-box}',
-    '.ibx-bar{position:fixed;top:56px;right:12px;z-index:9999;display:flex;gap:10px;align-items:center;flex-wrap:wrap;max-width:92vw;padding:6px 10px;border-radius:8px;background:rgba(20,22,28,.94);color:#e8e8e8;border:1px solid rgba(255,255,255,.18);font:12px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 4px 18px rgba(0,0,0,.4)}',
+    '.ibx-bar{position:fixed;bottom:12px;right:12px;z-index:9999;display:flex;gap:10px;align-items:center;flex-wrap:wrap;max-width:92vw;padding:6px 10px;border-radius:8px;background:rgba(20,22,28,.94);color:#e8e8e8;border:1px solid rgba(255,255,255,.18);font:12px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 4px 18px rgba(0,0,0,.4)}',
     '.ibx-bar .ibx-lab{opacity:.65}.ibx-bar .ibx-val{font-weight:600}',
     '.ibx-cushion-green{color:#4caf50}.ibx-cushion-amber{color:#ffb300}.ibx-cushion-red{color:#ef5350}',
     '.ibx-badge{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;font-size:10px;font-weight:700;vertical-align:middle}',
@@ -284,7 +284,7 @@
     '.ibx-zebra tbody tr:nth-child(even){background:rgba(255,255,255,.03)}',
     '.ibx-compact td,.ibx-compact th{padding-top:2px!important;padding-bottom:2px!important}',
     '.ibx-pos{color:#4caf50}.ibx-neg{color:#ef5350}',
-    '.ibx-panel{position:fixed;top:100px;right:12px;z-index:10000;background:rgba(20,22,28,.97);color:#e8e8e8;border:1px solid rgba(255,255,255,.2);border-radius:8px;padding:10px 12px;font:12px/1.6 -apple-system,Segoe UI,Roboto,sans-serif}',
+    '.ibx-panel{position:fixed;bottom:64px;right:12px;z-index:10000;background:rgba(20,22,28,.97);color:#e8e8e8;border:1px solid rgba(255,255,255,.2);border-radius:8px;padding:10px 12px;font:12px/1.6 -apple-system,Segoe UI,Roboto,sans-serif}',
     '.ibx-summary{padding:4px;font:12px -apple-system,Segoe UI,Roboto,sans-serif;opacity:.9}'
   ].join('\n');
 
@@ -368,31 +368,38 @@
     }
     var fields = {};
     labels.forEach(function (lab) { fields[lab] = labelledValue(lab); });
-    // Strict headline match: a block containing acct-id token AND currency AND signed change.
-    var alias = null, headline = null;
-    var candidates = Array.prototype.slice.call(main.querySelectorAll('div,header,section')).slice(0, 400);
-    for (var i = 0; i < candidates.length; i++) {
-      var txt = (candidates[i].textContent || '').replace(/\s+/g, ' ').trim();
-      if (txt.length > 220) continue;
-      var idm = txt.match(/\b([A-Z]\d{5,})\b/);
-      if (!idm) continue;
-      if (!/\b(USD|GBP|EUR)\b/.test(txt)) continue;
-      if (!/[+-][\d,]+(?:\.\d+)?\s*(%|USD|GBP|EUR)?/.test(txt.replace(idm[0], ''))) continue;
-      var money = txt.replace(idm[0], '').match(/[+-]?[\d,]{3,}(?:\.\d{2})/);
-      if (!money) continue;
-      // Same-account check: label list must share an ancestor container with the candidate.
-      var node = candidates[i], shared = false;
-      for (var depth = 0; node && depth < 8; depth++) {
-        if (firstLabelEl && node.contains(firstLabelEl)) { shared = true; break; }
-        node = node.parentElement;
-      }
-      if (!shared) continue;
-      headline = parseNumber(money[0]);
-      var before = txt.split(idm[0])[0].trim().replace(/[|•·-]+$/, '').trim();
-      alias = before ? before.split(/\s+/).slice(-3).join(' ') : 'Account ' + idm[0].charAt(0) + '•••';
-      break;
+    // Headline anchor: the sidebar account item = smallest ancestor of the
+    // summary labels whose subtree also contains the account-ID token.
+    var alias = null, headline = null, maskedId = null;
+    var item = null, node = firstLabelEl;
+    for (var depth = 0; node && depth < 10; depth++) {
+      if (/\b[A-Z]\d{5,}\b/.test(node.textContent || '')) { item = node; break; }
+      node = node.parentElement;
     }
-    return { fields: fields, headline: headline, alias: alias };
+    if (item) {
+      var fullText = (item.textContent || '').replace(/\s+/g, ' ').trim();
+      var cut = fullText.length;
+      labels.forEach(function (lab) { var i = fullText.indexOf(lab); if (i >= 0 && i < cut) cut = i; });
+      var header = fullText.slice(0, cut);
+      var idm = header.match(/\b([A-Z]\d{5,})\b/);
+      if (idm) {
+        maskedId = idm[1].charAt(0) + '\u2022\u2022\u2022' + idm[1].slice(-2);
+        var curIdx = header.search(/\b(USD|GBP|EUR)\b/);
+        var signed = /[+-][\d,]+(?:\.\d+)?/.test(header);
+        if (curIdx >= 0 && signed) {
+          var afterCur = header.slice(curIdx).replace(/^(USD|GBP|EUR)\b/, '');
+          var money = afterCur.match(/[+-]?[\d,]+(?:\.\d{2})/);
+          if (money) {
+            var candidate = parseNumber(money[0]);
+            var clashes = Object.keys(fields).some(function (k) { return fields[k] !== null && candidate === fields[k]; });
+            if (!clashes) headline = candidate;
+          }
+        }
+        var before = header.split(idm[1])[0].trim().replace(/[|•·\-:]+$/, '').trim();
+        alias = before ? before.split(/\s+/).slice(-3).join(' ') : maskedId;
+      }
+    }
+    return { fields: fields, headline: headline, alias: alias, maskedId: maskedId };
   }
 
   function fmtMoney(v) {
@@ -423,7 +430,7 @@
       var s = el('span'); var l = el('span', 'ibx-lab', label + ': '); var v = el('span', 'ibx-val', value);
       s.appendChild(l); s.appendChild(v); return s;
     }
-    bar.appendChild(pair('Account', ctx.alias || 'unknown'));
+    bar.appendChild(pair('Account', ctx.alias || ctx.maskedId || 'Account \u2022\u2022\u2022'));
     bar.appendChild(pair('NLV', fmtMoney(ctx.headline)));
     bar.appendChild(pair('Excess Liq', fmtMoney(ctx.fields['Excess Liquidity'])));
     bar.appendChild(pair('Buying Power', fmtMoney(ctx.fields['Buying Power'])));

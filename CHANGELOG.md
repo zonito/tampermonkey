@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-21 (v0.1.1)
+
+- IBKR Enhancer fix round after live proofread: re-anchor headline value on
+  the sidebar account item (ID + currency + signed change, candidate rejected
+  if equal to a labelled field); masked account ID instead of "unknown";
+  margin bar moved to bottom-right, clear of the top-right nav icons.
+
 ## 2026-10-21
 
 - Add IBKR Enhancer (`scripts/ibkr-enhancer.user.js`) v0.1.0: read-only Client
