@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-21 (v0.7.1)
+
+- IBKR Enhancer: ticket summary's immediate-fill warning now reads the
+  ticket's ask price (position Last remains the beyond-target warning).
+  The confirmation/blocks/receipt/Undo wiring itself landed in v0.7.0.
+
 ## 2026-10-21 (v0.7.0)
 
 - IBKR Enhancer ticket fill protection: confirmation summary in words

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.7.0
+// @version      0.7.1
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -1172,10 +1172,10 @@
         'Time-In-Force: GTC'
       ];
       lines.forEach(function (ln) { summary.appendChild(el('div', '', ln)); });
-      if (plan.last !== null && plan.last !== undefined) {
-        if (plan.limit >= plan.last) summary.appendChild(el('div', '', 'Warning: target is at or above the current price; this fills immediately and will not rest as a GTC.'));
-        if (plan.last < plan.limit) summary.appendChild(el('div', '', 'Warning: the current price is already beyond the target.'));
-      }
+      var askM = spacedText(ticket).match(/\bAsk\s*:?\s+([+-]?[\d,]+(?:\.\d+)?)/i);
+      var ask = askM ? parseNumber(askM[1]) : null;
+      if (ask !== null && plan.limit >= ask) summary.appendChild(el('div', '', 'Warning: target is at or above the ask price; this fills immediately and will not rest as a GTC.'));
+      if (plan.last !== null && plan.last !== undefined && plan.last < plan.limit) summary.appendChild(el('div', '', 'Warning: the last price is already beyond the target.'));
       var fillBtn = el('button', 'ibx-pill ibx-on', 'Fill');
       var cancelBtn = el('button', '', 'Cancel');
       fillBtn.addEventListener('click', function () {
