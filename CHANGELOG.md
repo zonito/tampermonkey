@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-21 (v0.10.1)
+
+- IBKR Enhancer keepalive fix: the session tickle now POSTs to the
+  relative path `/portal.proxy/v1/portal/tickle` with header
+  `Content-Type: application/json; charset=utf-8`, mirroring the
+  portal's own session tickle. Root cause: the portal serves its
+  session API through the `portal.proxy` prefix, so the direct Web
+  API path used in v0.10.0 fails from the Client Portal web app.
+  The relative path works unchanged on `.co.uk` and `.com`. Cadence
+  (4-minute timestamp-driven, first tickle at 15 seconds), lost-session
+  stop, failure counting and the guarded reload fallback are unchanged.
+  No fallback to the old path.
+
 ## 2026-10-21 (v0.10.0)
 
 - IBKR Enhancer session keepalive ("Keep IBKR session alive", default

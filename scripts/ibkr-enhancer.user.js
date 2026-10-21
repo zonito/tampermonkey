@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.10.0
-// @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders. Optional: exports open orders to local Kubera only. Session keepalive: same-origin POST /v1/api/tickle only.
+// @version      0.10.1
+// @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders. Optional: exports open orders to local Kubera only. Session keepalive: same-origin POST /portal.proxy/v1/portal/tickle only.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
 // @match        https://www.interactivebrokers.com/portal/*
@@ -1445,8 +1445,10 @@
 
   // ---- IBKR session keepalive: same-origin tickle, guarded reload fallback ----
   // The ONLY page-origin network call the enhancer makes: POST
-  // /v1/api/tickle with the portal's own session cookie. It reads no
-  // account data and changes nothing; the response is never stored.
+  // /portal.proxy/v1/portal/tickle with the portal's own session cookie
+  // (the portal serves its session API through the portal.proxy prefix).
+  // It reads no account data and changes nothing; the response is
+  // never stored.
   var keepaliveState = { lastSuccessAt: 0, failures: 0, lost: false, fallbackUsed: false, lastActivityAt: Date.now(), inFlight: false };
   var keepaliveStatus = 'Session keepalive: not tickled yet';
   function keepaliveStatusText() {
@@ -1517,7 +1519,7 @@
       }
     }
     try {
-      fetch('/v1/api/tickle', { method: 'POST', credentials: 'include' }).then(function (res) {
+      fetch('/portal.proxy/v1/portal/tickle', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json; charset=utf-8' } }).then(function (res) {
         if (res.status !== 200) { done('fail', res.status); return null; }
         return res.json().catch(function () { return null; });
       }).then(function (body) {

@@ -355,6 +355,15 @@ test('keepalive: tickle response classification tolerates shape drift', () => {
   assert.equal(tickleAuthState(0, null), 'fail');
 });
 
+test('keepalive: tickle fetch uses portal.proxy path with portal content-type', () => {
+  // The portal serves its session API through the portal.proxy prefix;
+  // the direct Web API path is dead on the portal origin (v0.10.0 bug).
+  assert.match(src, /fetch\('\/portal\.proxy\/v1\/portal\/tickle',\s*\{\s*method:\s*'POST',\s*credentials:\s*'include',\s*headers:\s*\{\s*'Content-Type':\s*'application\/json; charset=utf-8'\s*\}\s*\}\)/);
+  assert.equal(src.includes("fetch('/v1/api/tickle'"), false, 'old direct path must not remain as fetch target or fallback');
+  assert.match(src, /@version\s+0\.10\.1/);
+  assert.ok(src.includes('setTimeout(keepaliveTick, 15000)'), 'first tickle stays at 15 seconds');
+});
+
 test('keepalive: reload fallback needs 2 failures, 10 idle minutes, no ticket, no modal, once', () => {
   const { reloadFallbackReady } = P;
   const base = { failures: 2, lastActivityAt: 0, lost: false, fallbackUsed: false };

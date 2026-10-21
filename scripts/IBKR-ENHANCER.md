@@ -8,8 +8,9 @@ option-wheel workflow. One file: `ibkr-enhancer.user.js`. Vanilla JS, no
 
 **It never places, cancels, modifies or transmits an order and never clicks
 a native action button.** Copy buttons write CSV to the clipboard only.
-The only network call anywhere is the opt-in export of parsed open orders
-to the user's own local Kubera at `http://127.0.0.1:8000`; see below.
+Network calls are only the opt-in Kubera sends to the user's own local
+Kubera at `http://127.0.0.1:8000` and the session keepalive tickle below;
+see both sections.
 
 ## Account-values sync (v0.9.0, any page with a margin-bar read, default off)
 
@@ -37,11 +38,16 @@ next throttled read supersedes it. Kubera derives cushion server-side
 and answers stale/duplicate captures with `accepted: false`, which
 counts as success here.
 
-Session keepalive (v0.10.0, "Keep IBKR session alive", default on):
+Session keepalive (v0.10.1, "Keep IBKR session alive", default on):
 the enhancer's only page-origin network call — a same-origin `fetch`
-POST to `/v1/api/tickle` with `credentials: 'include'` every 4
-minutes, timestamp-driven so background-tab throttling cannot drift
-it, first tickle within the first minute. It is a session call, not
+POST to the relative path `/portal.proxy/v1/portal/tickle` with
+`credentials: 'include'` and header
+`Content-Type: application/json; charset=utf-8` every 4 minutes,
+timestamp-driven so background-tab throttling cannot drift it, first
+tickle 15 seconds after load. (v0.10.0 used the direct Web API path,
+which fails from the Client Portal web app; the portal serves its
+session API through the `portal.proxy` prefix, so the relative path
+works unchanged on `.co.uk` and `.com`.) It is a session call, not
 an account action: it reads no account data, and the response is
 never stored (only the last-tickle time and its authenticated flag
 live in memory and in the gear-panel line). If the tickle reports
