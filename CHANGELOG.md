@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-21 (v0.1.5)
+
+- IBKR Enhancer diagnostics: "Copy anchor debug" button in the settings
+  panel copies one shapes-only line (label counts, ancestor depth, ID-token
+  count, header length, currency/signed/money booleans, money digit-shape,
+  clash flag, enumerated rejection reason). No anchor behaviour change.
+
 ## 2026-10-21 (v0.1.4)
 
 - IBKR Enhancer filter bars redesigned: segmented controls for Type, Expiry

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.1.4
+// @version      0.1.5
 // @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders.
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
@@ -412,16 +412,25 @@
     });
   }
 
+  var lastAnchorDebug = 'IBX-ANCHOR reason=NOT_RUN';
+  function anchorDebugLine(d) {
+    return 'IBX-ANCHOR labels[EL=' + d.el + ',BP=' + d.bp + ',MM=' + d.mm + ',UP=' + d.up + '] depth=' + d.depth +
+      ' ids=' + d.ids + ' headerLen=' + d.headerLen + ' currency=' + d.currency + ' signed=' + d.signed +
+      ' money=' + d.money + ' moneyShape=' + (d.moneyShape || '-') + ' clash=' + d.clash + ' reason=' + d.reason;
+  }
   // Account header anchor: alias + account-id token + currency -> headline value -> signed change.
   function findAccountContext() {
+    var dbg = { el: 0, bp: 0, mm: 0, up: 0, depth: -1, ids: 0, headerLen: 0, currency: false, signed: false, money: false, moneyShape: null, clash: false, reason: 'NO_MAIN' };
     var main = document.querySelector('#cp-ib-app-main-content');
-    if (!main) return null;
+    if (!main) { lastAnchorDebug = anchorDebugLine(dbg); return null; }
+    dbg.reason = 'NO_LABELS';
     var labels = ['Excess Liquidity', 'Buying Power', 'Maintenance Margin', 'Unrealized P&L'];
     var labelEls = {}, firstLabelEl = null;
+    var labelCounts = { 'Excess Liquidity': 'el', 'Buying Power': 'bp', 'Maintenance Margin': 'mm', 'Unrealized P&L': 'up' };
     Array.prototype.forEach.call(main.querySelectorAll('div,span,td,li'), function (el) {
       var t = (el.textContent || '').trim();
       labels.forEach(function (lab) {
-        if (t === lab && !labelEls[lab]) { labelEls[lab] = el; if (!firstLabelEl) firstLabelEl = el; }
+        if (t === lab) { dbg[labelCounts[lab]]++; if (!labelEls[lab]) { labelEls[lab] = el; if (!firstLabelEl) firstLabelEl = el; } }
       });
     });
     function labelledValue(lab) {
@@ -440,13 +449,15 @@
     var cutLabels = labels.concat(['Settled Cash', 'Realized P&L']);
     var alias = null, headline = null, maskedId = null;
     var item = null, node = firstLabelEl;
+    dbg.reason = firstLabelEl ? 'NO_ITEM_1ID' : 'NO_LABELS';
     for (var depth = 0; node && depth < 25; depth++) {
       var ids = (node.textContent || '').match(/\b[A-Z]\d{5,}\b/g) || [];
-      if (ids.length === 1) item = node;
-      if (ids.length >= 2) break;
+      if (ids.length === 1) { item = node; dbg.depth = depth; dbg.ids = 1; }
+      if (ids.length >= 2) { if (!item) dbg.ids = ids.length; break; }
       node = node.parentElement;
     }
     if (item) {
+      dbg.reason = 'NO_ID_IN_HEADER';
       var fullText = (item.textContent || '').replace(/\s+/g, ' ').trim();
       var cut = fullText.length;
       cutLabels.forEach(function (lab) { var i = fullText.indexOf(lab); if (i >= 0 && i < cut) cut = i; });
@@ -457,18 +468,23 @@
       var idMatches = header.match(/[A-Z]\d{5,}/g) || [];
       var idTok = idMatches.length ? idMatches[idMatches.length - 1] : null;
       var idIdx = idTok ? header.lastIndexOf(idTok) : -1;
+      dbg.headerLen = header.length;
       if (idTok && idIdx >= 0) {
         maskedId = idTok.charAt(0) + '\u2022\u2022\u2022' + idTok.slice(-2);
         var afterId = header.slice(idIdx + idTok.length);
         var curM = afterId.match(/(USD|GBP|EUR)/);
         var signed = /[+-][\d,]+(?:\.\d+)?/.test(afterId);
+        dbg.currency = !!curM; dbg.signed = signed;
+        dbg.reason = !curM ? 'NO_CURRENCY' : (!signed ? 'NO_SIGNED' : 'NO_MONEY');
         if (curM && signed) {
           var afterCur = afterId.slice(curM.index + curM[1].length);
           var money = afterCur.match(/[+-]?[\d,]+(?:\.\d{2})/);
           if (money) {
+            dbg.money = true; dbg.moneyShape = money[0].replace(/\d/g, '#');
             var candidate = parseNumber(money[0]);
             var clashes = Object.keys(fields).some(function (k) { return fields[k] !== null && candidate === fields[k]; });
-            if (!clashes) headline = candidate;
+            dbg.clash = clashes;
+            if (!clashes) { headline = candidate; dbg.reason = 'OK'; } else dbg.reason = 'CLASH';
           }
         }
         var beforeId = header.slice(0, idIdx);
@@ -476,7 +492,8 @@
         alias = aliasM ? aliasM[1] : maskedId;
       }
     }
-    return { fields: fields, headline: headline, alias: alias, maskedId: maskedId };
+    lastAnchorDebug = anchorDebugLine(dbg);
+    return { fields: fields, headline: headline, alias: alias, maskedId: maskedId, debug: dbg };
   }
 
   function fmtMoney(v) {
@@ -547,6 +564,14 @@
     ['comfortable', 'compact'].forEach(function (d) { var o = document.createElement('option'); o.value = d; o.textContent = d; if (getSetting('density') === d) o.selected = true; sel.appendChild(o); });
     sel.addEventListener('change', function () { setSetting('density', sel.value); scheduleRun(); });
     drow.appendChild(sel); panel.appendChild(drow);
+    var dbgBtn = el('button', '', 'Copy anchor debug');
+    dbgBtn.addEventListener('click', function () {
+      try { findAccountContext(); } catch (e) { /* silent */ }
+      var line = lastAnchorDebug;
+      try { navigator.clipboard.writeText(line); } catch (e) { /* clipboard unavailable */ }
+      log(line);
+    });
+    panel.appendChild(dbgBtn);
     var hint = el('div', '', 'All off = native page. Read-only: never clicks native actions.');
     hint.style.opacity = '.6'; panel.appendChild(hint);
     document.body.appendChild(panel);
