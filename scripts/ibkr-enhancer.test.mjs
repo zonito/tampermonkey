@@ -14,7 +14,7 @@ assert.ok(start >= 0 && end > start, 'parser markers present');
 const parserSrc = src.slice(start, end);
 const mod = { exports: {} };
 // The parser block references `module` only via the guard below it; evaluate block + export line.
-new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, parseInstrumentSearch, buildPositionsSnapshot, findShortPosition, ticketFillPlan, positionsToCsv, ordersToCsv, formatLondonCapturedAt, currencyFromText, brokerOrderFromParsed, exportedOrdersComplete, buildBrokerSnapshots, buildAccountSnapshot, accountSyncFingerprint, accountSyncDecision, parseFeedAccounts, isFeedAccountAllowed, keepaliveDue, tickleAuthState, reloadFallbackReady, KEEPALIVE_INTERVAL_MS, KEEPALIVE_IDLE_RELOAD_MS };')(mod, mod.exports);
+new Function('module', 'exports', parserSrc + '\nmodule.exports = { parseNumber, parseInstrument, normalizeHeader, parsePositionRow, parseOrderRow, parseOrderMeta, parseStatus, dte, ageDays, cushionPct, cushionBand, premiumCaptured, isITM, netDeltaExposure, remainingNotional, duplicateOrderKeys, orderKey, isTerminalStatus, isOpenOrder, summarizeOrders, defaultFilterState, filterIsActive, matchesRowFilters, buildOrdersSnapshot, gtcTargetLimit, gtcChipState, wingPairState, ccCoverageState, parseInstrumentSearch, buildPositionsSnapshot, findShortPosition, ticketFillPlan, positionsToCsv, ordersToCsv, formatLondonCapturedAt, currencyFromText, brokerOrderFromParsed, exportedOrdersComplete, buildBrokerSnapshots, buildAccountSnapshot, accountSyncFingerprint, accountSyncDecision, parseFeedAccounts, isFeedAccountAllowed, keepaliveDue, tickleAuthState, reloadFallbackReady, normalizeButtonLabel, sessionDialogTextMatches, sessionExtendChoice, idleReloadReady, appendSessionEvent, sessionLogStats, formatSessionLog, SESSION_EXTEND_LABELS, SESSION_LOG_CAP, KEEPALIVE_INTERVAL_MS, KEEPALIVE_IDLE_RELOAD_MS };')(mod, mod.exports);
 const P = mod.exports;
 
 const H = ['Instrument', 'Position', 'Change %', 'Cost Basis', 'Market Value', 'Last', 'Avg Price', 'Daily P&L', 'Unrealized P&L', 'Delta', '52wk IV Rank', '52wk IV Pctl', 'P/E', 'Forward P/E', 'Beta', 'Market Cap', 'Social Sentiment Score', 'Social Sentiment Score Change'];
@@ -360,7 +360,7 @@ test('keepalive: tickle fetch uses portal.proxy path with portal content-type', 
   // the direct Web API path is dead on the portal origin (v0.10.0 bug).
   assert.match(src, /fetch\('\/portal\.proxy\/v1\/portal\/tickle',\s*\{\s*method:\s*'POST',\s*credentials:\s*'include',\s*headers:\s*\{\s*'Content-Type':\s*'application\/json; charset=utf-8'\s*\}\s*\}\)/);
   assert.equal(src.includes("fetch('/v1/api/tickle'"), false, 'old direct path must not remain as fetch target or fallback');
-  assert.match(src, /@version\s+0\.10\.1/);
+  assert.match(src, /@version\s+0\.11\.0/);
   assert.ok(src.includes('setTimeout(keepaliveTick, 15000)'), 'first tickle stays at 15 seconds');
 });
 
@@ -375,4 +375,70 @@ test('keepalive: reload fallback needs 2 failures, 10 idle minutes, no ticket, n
   assert.equal(reloadFallbackReady(base, 600000, { ticketOpen: false, modalOpen: true }), false, 'open modal blocks');
   assert.equal(reloadFallbackReady({ ...base, fallbackUsed: true }, 600000, open), false, 'once per idle period');
   assert.equal(reloadFallbackReady({ ...base, lost: true }, 600000, open), false, 'a lost session never reloads');
+});
+
+test('guardian: extend choice picks only allowlisted stay buttons in session dialogs', () => {
+  const { sessionExtendChoice } = P;
+  const dlg = 'Your session is about to expire due to inactivity. You will be logged out in 30 seconds.';
+  assert.equal(sessionExtendChoice(dlg, ['Log Out', 'Stay Logged In']), 1);
+  assert.equal(sessionExtendChoice(dlg, ['Stay logged in (0:27)']), 0, 'countdown suffix tolerated');
+  assert.equal(sessionExtendChoice(dlg, ['Stay Signed In']), 0);
+  assert.equal(sessionExtendChoice(dlg, ['Continue Session']), 0);
+  assert.equal(sessionExtendChoice('You will be logged in shortly', ['Keep Me Logged In']), 0);
+  assert.equal(sessionExtendChoice(dlg, ['  stay   logged   in  ']), 0, 'whitespace and case normalized');
+});
+
+test('guardian: forbidden labels and non-session dialogs are never clicked', () => {
+  const { sessionExtendChoice, sessionDialogTextMatches } = P;
+  const dlg = 'Your session is about to expire due to inactivity.';
+  assert.equal(sessionExtendChoice(dlg, ['Log Out Now', 'Cancel']), -1);
+  assert.equal(sessionExtendChoice(dlg, ['Submit', 'Preview', 'Buy', 'Sell']), -1);
+  assert.equal(sessionExtendChoice(dlg, ['Stay Logged In', 'Log Out']), 0, 'forbidden sibling does not block the allowlisted one');
+  assert.equal(sessionExtendChoice(dlg, []), -1, 'no buttons, no click');
+  assert.equal(sessionExtendChoice('Order confirmation', ['Stay Logged In']), -1, 'non-session dialog never matches');
+  assert.equal(sessionExtendChoice('Welcome back', ['Continue']), -1, '"Continue" alone is not allowlisted');
+  assert.equal(sessionDialogTextMatches('Inactivity warning'), true);
+  assert.equal(sessionDialogTextMatches('Market data subscription'), false);
+});
+
+test('guardian: idle reload needs a proven session, full idle window, no guards, once per idle period', () => {
+  const { idleReloadReady } = P;
+  const open = { ticketOpen: false, modalOpen: false };
+  const base = { lost: false, authenticated: true, idleReloadUsed: false, lastActivityAt: 0 };
+  assert.equal(idleReloadReady(base, 50 * 60000, open, 50 * 60000), true);
+  assert.equal(idleReloadReady(base, 50 * 60000 - 1, open, 50 * 60000), false, 'before the window, no reload');
+  assert.equal(idleReloadReady({ ...base, authenticated: false }, 50 * 60000, open, 50 * 60000), false, 'no proven session to preserve');
+  assert.equal(idleReloadReady({ ...base, lost: true }, 50 * 60000, open, 50 * 60000), false, 'lost session never reloads');
+  assert.equal(idleReloadReady({ ...base, idleReloadUsed: true }, 50 * 60000, open, 50 * 60000), false, 'once per idle period');
+  assert.equal(idleReloadReady(base, 50 * 60000, { ticketOpen: true, modalOpen: false }, 50 * 60000), false, 'open ticket blocks');
+  assert.equal(idleReloadReady(base, 50 * 60000, { ticketOpen: false, modalOpen: true }, 50 * 60000), false, 'open modal blocks');
+  assert.equal(idleReloadReady({ ...base, lastActivityAt: 1000 }, 1000 + 50 * 60000, open), true, 'default window is 50 minutes');
+});
+
+test('guardian: session log ring keeps only timestamps, kinds and capped details', () => {
+  const { appendSessionEvent, sessionLogStats, formatSessionLog, SESSION_LOG_CAP } = P;
+  let log = [];
+  log = appendSessionEvent(log, { t: 1000, kind: 'start', detail: 'v0.11.0', account: 'U123', secret: 'x' });
+  assert.deepEqual(log, [{ t: 1000, kind: 'start', detail: 'v0.11.0' }], 'unknown fields are dropped');
+  for (let i = 0; i < SESSION_LOG_CAP + 10; i++) log = appendSessionEvent(log, { t: 2000 + i, kind: 'tickle-ok' });
+  assert.equal(log.length, SESSION_LOG_CAP, 'ring is capped');
+  assert.equal(log[0].t, 2010, 'oldest entries evicted first');
+  const stats = sessionLogStats([
+    { t: 1, kind: 'start' }, { t: 2, kind: 'extend-click' }, { t: 3, kind: 'idle-reload' },
+    { t: 4, kind: 'fallback-reload' }, { t: 5, kind: 'extend-click' }, { t: 6, kind: 'gap' }]);
+  assert.equal(stats.extensions, 2);
+  assert.equal(stats.reloads, 2);
+  assert.equal(stats.firstAt, 1); assert.equal(stats.lastAt, 6); assert.equal(stats.lastKind, 'gap');
+  const lines = formatSessionLog([{ t: new Date(2026, 9, 23, 7, 48, 9).getTime(), kind: 'extend-click', detail: 'stay logged in' }]);
+  assert.match(lines, /2026-10-23 07:48:09 extend-click stay logged in/);
+});
+
+test('guardian: source shape — one extend click site, grants unchanged, defaults on', () => {
+  const extendClicks = src.match(/btns\[idx\]\.click\(\)/g) || [];
+  assert.equal(extendClicks.length, 1, 'exactly one guardian click call site');
+  assert.equal(src.includes("@grant        GM_xmlhttpRequest"), true);
+  assert.equal((src.match(/@grant/g) || []).length, 4, 'no new grants');
+  assert.match(src, /autoExtendSession: true, idleReload: true, idleReloadMinutes: 50/);
+  assert.ok(src.includes('new MutationObserver'), 'dialog observer present');
+  assert.ok(src.includes('Copy session log'), 'gear panel can copy the diagnostics log');
 });

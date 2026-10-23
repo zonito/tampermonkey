@@ -62,6 +62,35 @@ absolute session expiry or a competing session (mobile/TWS login) —
 this feature targets the inactivity logout only, which is what
 otherwise silently starves the Kubera margin feed.
 
+Session guardian (v0.11.0): the portal web UI runs a second,
+separate inactivity timer (user setting, maximum 60 minutes) that
+programmatic tickles do not reset. When it fires, the portal shows
+a stay-logged-in offer for about 30 seconds, then logs out.
+"Auto-extend session prompt" (default on) watches for that dialog
+with a MutationObserver and clicks the portal's own stay-logged-in
+button — the one native click the enhancer is permitted, and a
+deliberate, narrow exception to the read-only rule. The decision
+is pure and allowlist-based: the dialog's own words (button labels
+excluded) must carry session semantics, and the clicked button's
+label must match the allowlist ("stay logged in", "stay signed
+in", "continue session", "extend session", "keep me logged in",
+"yes, stay logged in", countdown suffixes tolerated). Buttons
+labelled log out, sign out, cancel, submit, preview, buy or sell
+are never clicked, and each dialog element is extended at most
+once. "Pre-emptive reload when idle" (default on, threshold
+setting, default 50 minutes, minimum 5) reloads the page once per
+idle period when the tickle has proven the session authenticated,
+no order ticket and no visibly open modal is present, and the
+session is not lost — real activity resets the timer, so the
+unattended tab never reaches the logout dialog. Diagnostics: the
+script keeps the last 50 session events (timestamps and kinds
+only, no account data) in local storage; the gear panel shows the
+session age, extension and reload counts and last event, and
+"Copy session log" copies the log for review. A `gap` event at
+start-up means the page JavaScript was not running for over 10
+minutes (discarded/frozen tab, asleep machine), which classifies
+a logout no in-page technique could have prevented.
+
 ## Kubera export (v0.8.0, Orders page only, default off; toolbar/toast polish v0.8.1)
 
 Settings toggle "Export orders to Kubera" plus a "Kubera ingest token"

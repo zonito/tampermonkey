@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-10-23 (v0.11.0)
+
+- IBKR Enhancer session guardian, built after the finding that the
+  Client Portal UI runs its own inactivity logout (user setting,
+  maximum 60 minutes) that the tickle does not reset: at the idle
+  limit the portal offers "stay logged in" for ~30 seconds, and an
+  unattended tab never takes it. Three layers, all under the "Keep
+  IBKR session alive" master toggle. (1) Auto-extend (default on):
+  a MutationObserver watches for a visible session dialog and
+  clicks the portal's own stay-logged-in button — the one native
+  click the enhancer is permitted, allowlist-based (dialog words
+  must carry session semantics with button labels excluded; labels
+  matching log out / sign out / cancel / submit / preview / buy /
+  sell are never clicked; each dialog extended at most once).
+  (2) Pre-emptive idle reload (default on, threshold setting
+  default 50 minutes, minimum 5): one reload per idle period when
+  the tickle has proven the session authenticated and no order
+  ticket or visibly open modal is present. (3) Diagnostics: a
+  50-entry local event log (timestamps and kinds only) with a gear
+  panel session line and "Copy session log", including a start-up
+  `gap` event when the page JS was not running for 10+ minutes, so
+  the next logout can be classified from evidence. Tests: repo
+  suite 31/31 (6 new guardian cases) plus an 11-check jsdom gate
+  covering click safety, forbidden labels, hidden dialogs and the
+  idle reload firing.
+
 ## 2026-10-21 (v0.10.1)
 
 - IBKR Enhancer keepalive fix: the session tickle now POSTs to the

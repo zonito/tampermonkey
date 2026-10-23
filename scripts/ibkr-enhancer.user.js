@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IBKR Enhancer
 // @namespace    https://github.com/zonito/tampermonkey
-// @version      0.10.1
-// @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders. Optional: exports open orders to local Kubera only. Session keepalive: same-origin POST /portal.proxy/v1/portal/tickle only.
+// @version      0.11.0
+// @description  Read-only scan aids for IBKR Client Portal: margin cushion, option expiry/ITM/premium badges, grouping, filters, order age and CSV copy. Never places, cancels or modifies orders. Optional: exports open orders to local Kubera only. Session keepalive: same-origin POST /portal.proxy/v1/portal/tickle only. Session guardian: auto-extends the portal's own stay-logged-in prompt (the one permitted native click).
 // @author       Zonito
 // @match        https://www.interactivebrokers.co.uk/portal/*
 // @match        https://www.interactivebrokers.com/portal/*
@@ -584,6 +584,85 @@
     var lastActivity = typeof s.lastActivityAt === 'number' ? s.lastActivityAt : 0;
     return nowMs - lastActivity >= KEEPALIVE_IDLE_RELOAD_MS;
   }
+  // ---- session guardian (v0.11.0): pure decision logic ----
+  // The portal UI runs its own inactivity logout (user-settable to at
+  // most 60 minutes) and shows a stay-logged-in offer for ~30 seconds.
+  // The tickle does not count as UI activity, so the guardian answers
+  // that offer. These functions decide; the runtime acts.
+  var SESSION_EXTEND_LABELS = ['stay logged in', 'stay signed in', 'continue session', 'extend session', 'keep me logged in', 'yes, stay logged in'];
+  var SESSION_FORBIDDEN_LABEL = /(log\s?out|sign\s?out|cancel|submit|preview|buy|sell)/;
+  var SESSION_LOG_CAP = 50;
+  function normalizeButtonLabel(text) {
+    return String(text == null ? '' : text).toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+  function sessionDialogTextMatches(text) {
+    var t = String(text == null ? '' : text).toLowerCase();
+    return t.indexOf('logged in') >= 0 || t.indexOf('inactiv') >= 0 ||
+      t.indexOf('log out') >= 0 || t.indexOf('logout') >= 0 || t.indexOf('session') >= 0;
+  }
+  // Returns the index of the one button the guardian may click, or -1.
+  // Forbidden labels are never clickable, even inside a matching dialog.
+  function sessionExtendChoice(dialogText, buttonLabels) {
+    if (!sessionDialogTextMatches(dialogText)) return -1;
+    var list = buttonLabels || [];
+    for (var i = 0; i < list.length; i++) {
+      var label = normalizeButtonLabel(list[i]);
+      if (!label) continue;
+      if (SESSION_FORBIDDEN_LABEL.test(label)) continue;
+      for (var j = 0; j < SESSION_EXTEND_LABELS.length; j++) {
+        var want = SESSION_EXTEND_LABELS[j];
+        if (label === want || label.indexOf(want + ' ') === 0 || label.indexOf(want + '(') === 0) return i;
+      }
+    }
+    return -1;
+  }
+  function idleReloadReady(state, nowMs, guards, idleMs) {
+    var s = state || {}; var g = guards || {};
+    var need = typeof idleMs === 'number' && idleMs > 0 ? idleMs : 50 * 60000;
+    if (s.lost) return false;
+    if (s.authenticated !== true) return false; // no proven session to preserve
+    if (s.idleReloadUsed) return false;
+    if (g.ticketOpen || g.modalOpen) return false;
+    var lastActivity = typeof s.lastActivityAt === 'number' ? s.lastActivityAt : 0;
+    return nowMs - lastActivity >= need;
+  }
+  // Ring buffer: timestamps and event kinds only. Any other fields on
+  // the incoming event are dropped, strings are length-capped.
+  function appendSessionEvent(events, evt, cap) {
+    var list = Array.isArray(events) ? events.slice() : [];
+    var e = evt || {};
+    list.push({
+      t: typeof e.t === 'number' ? e.t : 0,
+      kind: String(e.kind == null ? '' : e.kind).slice(0, 32),
+      detail: String(e.detail == null ? '' : e.detail).slice(0, 60)
+    });
+    var keep = typeof cap === 'number' && cap > 0 ? cap : SESSION_LOG_CAP;
+    return list.length > keep ? list.slice(list.length - keep) : list;
+  }
+  function sessionLogStats(events) {
+    var list = Array.isArray(events) ? events : [];
+    var stats = { extensions: 0, reloads: 0, firstAt: null, lastAt: null, lastKind: '' };
+    list.forEach(function (e) {
+      if (!e) return;
+      if (e.kind === 'extend-click') stats.extensions += 1;
+      if (e.kind === 'idle-reload' || e.kind === 'fallback-reload') stats.reloads += 1;
+      if (typeof e.t === 'number' && e.t > 0) {
+        if (stats.firstAt === null) stats.firstAt = e.t;
+        stats.lastAt = e.t; stats.lastKind = e.kind || '';
+      }
+    });
+    return stats;
+  }
+  function formatSessionLog(events) {
+    var list = Array.isArray(events) ? events : [];
+    function p2(n) { return ('0' + n).slice(-2); }
+    return list.map(function (e) {
+      var d = new Date(e && typeof e.t === 'number' ? e.t : 0);
+      var stamp = d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) +
+        ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
+      return stamp + ' ' + (e && e.kind ? e.kind : '') + (e && e.detail ? ' ' + e.detail : '');
+    }).join('\n');
+  }
   // ================= PARSER END =================
 
   var PARSER = { parseNumber: parseNumber, parseInstrument: parseInstrument, normalizeHeader: normalizeHeader,
@@ -603,12 +682,16 @@
     buildAccountSnapshot: buildAccountSnapshot, accountSyncFingerprint: accountSyncFingerprint,
     accountSyncDecision: accountSyncDecision,
     keepaliveDue: keepaliveDue, tickleAuthState: tickleAuthState, reloadFallbackReady: reloadFallbackReady,
+    normalizeButtonLabel: normalizeButtonLabel, sessionDialogTextMatches: sessionDialogTextMatches,
+    sessionExtendChoice: sessionExtendChoice, idleReloadReady: idleReloadReady,
+    appendSessionEvent: appendSessionEvent, sessionLogStats: sessionLogStats, formatSessionLog: formatSessionLog,
+    SESSION_EXTEND_LABELS: SESSION_EXTEND_LABELS, SESSION_LOG_CAP: SESSION_LOG_CAP,
     KEEPALIVE_INTERVAL_MS: KEEPALIVE_INTERVAL_MS, KEEPALIVE_IDLE_RELOAD_MS: KEEPALIVE_IDLE_RELOAD_MS };
   if (typeof module !== 'undefined' && module.exports) module.exports = PARSER;
 
   // ---------- settings ----------
   var DEFAULTS = { marginBar: true, badges: true, grouping: false, filters: true, orderAges: true,
-    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, ticketFill: true, exportOrders: false, accountSync: false, sessionKeepalive: true, kuberaIngestToken: '', feedAccounts: 'U19377323,U26948221', density: 'comfortable', dismissedBar: false, barCollapsed: false };
+    copyButtons: true, readability: true, gtcChips: true, wingChips: true, ccChips: true, ticketFill: true, exportOrders: false, accountSync: false, sessionKeepalive: true, autoExtendSession: true, idleReload: true, idleReloadMinutes: 50, kuberaIngestToken: '', feedAccounts: 'U19377323,U26948221', density: 'comfortable', dismissedBar: false, barCollapsed: false };
   function getSetting(key) {
     try { if (typeof GM_getValue === 'function') { var v = GM_getValue('ibx.' + key, undefined); if (v !== undefined) return v; } } catch (e) { /* silent */ }
     try { var raw = window.localStorage.getItem('ibx.' + key); return raw === null ? DEFAULTS[key] : JSON.parse(raw); } catch (e) { return DEFAULTS[key]; }
@@ -619,7 +702,7 @@
   }
   function allOff() {
     return !getSetting('marginBar') && !getSetting('badges') && !getSetting('grouping') &&
-      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips') && !getSetting('wingChips') && !getSetting('ccChips') && !getSetting('ticketFill') && !getSetting('exportOrders') && !getSetting('accountSync') && !getSetting('sessionKeepalive');
+      !getSetting('filters') && !getSetting('orderAges') && !getSetting('copyButtons') && !getSetting('readability') && !getSetting('gtcChips') && !getSetting('wingChips') && !getSetting('ccChips') && !getSetting('ticketFill') && !getSetting('exportOrders') && !getSetting('accountSync') && !getSetting('sessionKeepalive') && !getSetting('autoExtendSession') && !getSetting('idleReload');
   }
 
   var CSS = [
@@ -960,7 +1043,7 @@
     var title = el('div', '', 'IBKR Enhancer settings'); title.style.fontWeight = '700'; panel.appendChild(title);
     [['marginBar', 'Margin bar'], ['badges', 'Positions badges'], ['grouping', 'Group by underlying'],
      ['filters', 'Filter bars'], ['orderAges', 'Order age / notional'], ['copyButtons', 'Copy CSV buttons'],
-     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips'], ['wingChips', 'Wing pairing chips'], ['ccChips', 'Covered-call chips'], ['ticketFill', 'Order ticket GTC fill'], ['exportOrders', 'Export orders to Kubera'], ['accountSync', 'Sync account values to Kubera'], ['sessionKeepalive', 'Keep IBKR session alive']].forEach(function (pairDef) {
+     ['readability', 'Readability (zebra/header/density)'], ['gtcChips', 'GTC closing-order chips'], ['wingChips', 'Wing pairing chips'], ['ccChips', 'Covered-call chips'], ['ticketFill', 'Order ticket GTC fill'], ['exportOrders', 'Export orders to Kubera'], ['accountSync', 'Sync account values to Kubera'], ['sessionKeepalive', 'Keep IBKR session alive'], ['autoExtendSession', 'Auto-extend session prompt (Stay Logged In)'], ['idleReload', 'Pre-emptive reload when idle']].forEach(function (pairDef) {
       var row = el('label'); row.style.display = 'block';
       var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!getSetting(pairDef[0]);
       cb.setAttribute('data-ibkr-enhancer', '1');
@@ -985,6 +1068,17 @@
     feedInput.value = getSetting('feedAccounts') || '';
     feedInput.addEventListener('change', function () { setSetting('feedAccounts', feedInput.value.trim()); });
     frow.appendChild(feedInput); panel.appendChild(frow);
+    var irow = el('label', '', 'Idle reload after (minutes, min 5): '); irow.style.display = 'block';
+    var idleInput = document.createElement('input'); idleInput.type = 'text'; idleInput.autocomplete = 'off';
+    idleInput.setAttribute('data-ibkr-enhancer', '1');
+    idleInput.value = String(getSetting('idleReloadMinutes') || 50);
+    idleInput.addEventListener('change', function () {
+      var n = parseInt(idleInput.value, 10);
+      if (!(n >= 5)) n = 50;
+      idleInput.value = String(n);
+      setSetting('idleReloadMinutes', n);
+    });
+    irow.appendChild(idleInput); panel.appendChild(irow);
     var syncLine = el('div', '', accountSyncStatusText());
     syncLine.setAttribute('data-ibkr-enhancer', 'sync-status');
     syncLine.style.opacity = '.75';
@@ -993,6 +1087,17 @@
     keepLine.setAttribute('data-ibkr-enhancer', 'keepalive-status');
     keepLine.style.opacity = '.75';
     panel.appendChild(keepLine);
+    var sessLine = el('div', '', sessionStatusText());
+    sessLine.setAttribute('data-ibkr-enhancer', 'session-status');
+    sessLine.style.opacity = '.75';
+    panel.appendChild(sessLine);
+    var logBtn = el('button', '', 'Copy session log');
+    logBtn.addEventListener('click', function () {
+      var text = formatSessionLog(readSessionLog());
+      try { navigator.clipboard.writeText(text); } catch (e) { /* clipboard unavailable */ }
+      log('session log copied (' + readSessionLog().length + ' events)');
+    });
+    panel.appendChild(logBtn);
     var dbgBtn = el('button', '', 'Copy anchor debug');
     dbgBtn.addEventListener('click', function () {
       try { findAccountContext(); } catch (e) { /* silent */ }
@@ -1001,7 +1106,7 @@
       log(line);
     });
     panel.appendChild(dbgBtn);
-    var hint = el('div', '', 'All off = native page. Read-only: never clicks native actions.');
+    var hint = el('div', '', 'All off = native page. Read-only, with one exception: Auto-extend clicks only the portal Stay Logged In button in its session dialog.');
     hint.style.opacity = '.6'; panel.appendChild(hint);
     document.body.appendChild(panel);
   }
@@ -1461,16 +1566,19 @@
       node.textContent = keepaliveStatusText();
     });
   }
+  // The portal keeps dormant dialogs in the DOM (display:none /
+  // aria-hidden ancestors); only a visibly open dialog counts.
+  function visiblyOpen(node) {
+    if (!node) return false;
+    if (node.closest && node.closest('[aria-hidden="true"]')) return false;
+    for (var cur = node; cur && cur !== document.body; cur = cur.parentElement) {
+      if (cur.style && cur.style.display === 'none') return false;
+      if (cur.hidden) return false;
+    }
+    try { return window.getComputedStyle(node).display !== 'none'; } catch (e) { return true; }
+  }
   function keepaliveGuards() {
-    // The portal keeps dormant dialogs in the DOM (display:none /
-    // aria-hidden ancestors); only a visibly open dialog blocks.
-    var modalOpen = Array.prototype.some.call(document.querySelectorAll('[role="dialog"], [aria-modal="true"]'), function (node) {
-      if (node.closest && node.closest('[aria-hidden="true"]')) return false;
-      for (var cur = node; cur && cur !== document.body; cur = cur.parentElement) {
-        if (cur.style && cur.style.display === 'none') return false;
-      }
-      try { return window.getComputedStyle(node).display !== 'none'; } catch (e) { return true; }
-    });
+    var modalOpen = Array.prototype.some.call(document.querySelectorAll('[role="dialog"], [aria-modal="true"]'), visiblyOpen);
     return {
       ticketOpen: !!document.querySelector('.order-ticket__sidebar'),
       modalOpen: modalOpen
@@ -1479,6 +1587,7 @@
   function noteUserActivity() {
     keepaliveState.lastActivityAt = Date.now();
     try { window.sessionStorage.removeItem('ibx.keepaliveReloaded'); } catch (e) { /* silent */ }
+    try { window.sessionStorage.removeItem('ibx.idleReloaded'); } catch (e) { /* silent */ }
   }
   function keepaliveTick() {
     if (!getSetting('sessionKeepalive')) { setKeepaliveStatus(keepaliveStatus); return; }
@@ -1498,16 +1607,20 @@
         keepaliveState.failures = 0;
         try { window.sessionStorage.removeItem('ibx.keepaliveReloaded'); } catch (e) { /* silent */ }
         setKeepaliveStatus('Session keepalive: last ' + hms);
+        logSessionEvent('tickle-ok', state === 'ok-shape' ? 'shape drift' : '');
         return;
       }
       if (state === 'lost') {
         keepaliveState.lost = true;
         setKeepaliveStatus('Session keepalive: session lost \u2014 log in again');
         log('tickle reports the session is no longer authenticated; keepalive stopped');
+        try { window.sessionStorage.removeItem('ibx.sessionStartAt'); } catch (e) { /* silent */ }
+        logSessionEvent('tickle-auth-false', '');
         return;
       }
       keepaliveState.failures += 1;
       log('tickle failed (' + (status || 'network error') + '), consecutive failures: ' + keepaliveState.failures);
+      logSessionEvent('tickle-fail', String(status || 'network'));
       var guards = keepaliveGuards();
       var reloaded = false;
       try { reloaded = !!window.sessionStorage.getItem('ibx.keepaliveReloaded'); } catch (e) { reloaded = false; }
@@ -1515,6 +1628,7 @@
       if (reloadFallbackReady(keepaliveState, Date.now(), guards)) {
         try { window.sessionStorage.setItem('ibx.keepaliveReloaded', '1'); } catch (e) { /* silent */ }
         log('tickle failing and page idle with no ticket/modal open: one fallback reload');
+        logSessionEvent('fallback-reload', '');
         window.location.reload();
       }
     }
@@ -1535,7 +1649,147 @@
     window.addEventListener('pointerdown', noteUserActivity, true);
     window.addEventListener('keydown', noteUserActivity, true);
     setTimeout(keepaliveTick, 15000); // first tickle within the first minute
-    keepaliveTimer = setInterval(keepaliveTick, 30000); // timestamp-driven; throttling cannot drift it
+    startGuardian();
+    keepaliveTimer = setInterval(function () {
+      keepaliveTick();
+      maybeIdleReload();
+      scanForSessionDialog(); // backstop; the observer is the primary path
+    }, 30000); // timestamp-driven; throttling cannot drift it
+  }
+
+  // ---- session guardian (v0.11.0) ----
+  // The portal UI's own inactivity logout (max setting 60 minutes) is a
+  // separate timer from the brokerage session the tickle maintains: it
+  // shows a stay-logged-in offer for ~30 seconds, then logs out. This
+  // guardian answers that offer. The extend click below is the ONE
+  // native click the enhancer is permitted: the portal's own
+  // stay-logged-in button, inside its own session dialog, chosen by the
+  // pure allowlist logic above. Nothing else is ever clicked.
+  function readSessionLog() {
+    var v = getSetting('sessionEventLog');
+    return Array.isArray(v) ? v : [];
+  }
+  function logSessionEvent(kind, detail) {
+    try {
+      var events = readSessionLog();
+      if (kind === 'tickle-ok' && events.length) {
+        var last = events[events.length - 1];
+        // Heartbeat only: a tickle-ok every 4 minutes would evict the
+        // events that matter from the 50-entry ring within hours.
+        if (last.kind === 'tickle-ok' && Date.now() - last.t < 1800000) return;
+      }
+      setSetting('sessionEventLog', appendSessionEvent(events, { t: Date.now(), kind: kind, detail: detail || '' }));
+      refreshSessionStatusLine();
+    } catch (e) { /* silent */ }
+  }
+  function sessionStatusText() {
+    if (!getSetting('sessionKeepalive')) return 'Session guardian: off';
+    var stats = sessionLogStats(readSessionLog());
+    var age = '';
+    try {
+      var s0 = Number(window.sessionStorage.getItem('ibx.sessionStartAt'));
+      if (s0 > 0) {
+        var mins = Math.max(0, Math.floor((Date.now() - s0) / 60000));
+        age = ' · age ' + (mins >= 60 ? Math.floor(mins / 60) + 'h' + ('0' + (mins % 60)).slice(-2) + 'm' : mins + 'm');
+      }
+    } catch (e) { /* silent */ }
+    var lastTxt = '';
+    if (stats.lastAt) {
+      var d = new Date(stats.lastAt);
+      lastTxt = ' · last ' + stats.lastKind + ' ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ':' + ('0' + d.getSeconds()).slice(-2);
+    }
+    return 'Session guardian: extends ' + stats.extensions + ' · reloads ' + stats.reloads + age + lastTxt;
+  }
+  function refreshSessionStatusLine() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-ibkr-enhancer="session-status"]'), function (node) {
+      node.textContent = sessionStatusText();
+    });
+  }
+  var extendClickedDialogs = new WeakSet();
+  var extendSeenDialogs = new WeakSet();
+  function scanForSessionDialog() {
+    if (!getSetting('sessionKeepalive') || !getSetting('autoExtendSession')) return;
+    if (keepaliveState.lost) return;
+    var dialogs = document.querySelectorAll('[role="dialog"], [aria-modal="true"]');
+    for (var i = 0; i < dialogs.length; i++) {
+      var dlg = dialogs[i];
+      if (dlg.closest && dlg.closest('[data-ibkr-enhancer]')) continue;
+      if (!visiblyOpen(dlg)) continue;
+      var btns = dlg.querySelectorAll('button, [role="button"]');
+      // Match the session semantics on the dialog's own words only:
+      // button labels are excluded, or a "Stay Logged In" button would
+      // make any dialog it sits in look like a session dialog.
+      var probe = dlg.cloneNode(true);
+      Array.prototype.forEach.call(probe.querySelectorAll('button, [role="button"]'), function (n) { n.remove(); });
+      var text = probe.textContent || '';
+      var labels = [];
+      for (var b = 0; b < btns.length; b++) labels.push(btns[b].textContent || '');
+      var idx = sessionExtendChoice(text, labels);
+      if (idx >= 0) {
+        if (extendClickedDialogs.has(dlg)) return;
+        extendClickedDialogs.add(dlg);
+        logSessionEvent('dialog-seen', 'extend available');
+        try { btns[idx].click(); } catch (e) { log('extend click failed', e && e.message); return; }
+        logSessionEvent('extend-click', normalizeButtonLabel(labels[idx]));
+        log('session inactivity dialog auto-extended');
+        return;
+      }
+      if (sessionDialogTextMatches(text) && !extendSeenDialogs.has(dlg)) {
+        extendSeenDialogs.add(dlg);
+        logSessionEvent('dialog-seen', 'no extend button');
+      }
+    }
+  }
+  function maybeIdleReload() {
+    if (!getSetting('sessionKeepalive') || !getSetting('idleReload')) return;
+    var minutes = Number(getSetting('idleReloadMinutes'));
+    if (!(minutes >= 5)) minutes = 50;
+    var used = false;
+    try { used = !!window.sessionStorage.getItem('ibx.idleReloaded'); } catch (e) { /* silent */ }
+    var state = {
+      lost: keepaliveState.lost,
+      authenticated: keepaliveState.lastSuccessAt > 0,
+      idleReloadUsed: used,
+      lastActivityAt: keepaliveState.lastActivityAt
+    };
+    if (!idleReloadReady(state, Date.now(), keepaliveGuards(), minutes * 60000)) return;
+    try { window.sessionStorage.setItem('ibx.idleReloaded', '1'); } catch (e) { /* silent */ }
+    logSessionEvent('idle-reload', minutes + 'm idle');
+    log('idle reload: no user activity for ' + minutes + ' minutes, session authenticated');
+    window.location.reload();
+  }
+  var guardianObs = null;
+  var guardianScanTimer = null;
+  function startGuardian() {
+    var now = Date.now();
+    var events = readSessionLog();
+    if (events.length) {
+      var lastT = events[events.length - 1].t;
+      if (typeof lastT === 'number' && now - lastT > 600000) {
+        // The page JS was not running for a while (discarded or frozen
+        // tab, asleep machine, browser closed). Recorded so the next
+        // logout can be classified from evidence, not guessed.
+        logSessionEvent('gap', Math.round((now - lastT) / 60000) + 'm');
+      }
+    }
+    try {
+      if (!window.sessionStorage.getItem('ibx.sessionStartAt')) {
+        window.sessionStorage.setItem('ibx.sessionStartAt', String(now));
+      }
+    } catch (e) { /* silent */ }
+    logSessionEvent('start', 'v0.11.0');
+    if (guardianObs) return;
+    try {
+      guardianObs = new MutationObserver(function () {
+        if (guardianScanTimer) return;
+        guardianScanTimer = setTimeout(function () { guardianScanTimer = null; scanForSessionDialog(); }, 150);
+      });
+      guardianObs.observe(document.body || document.documentElement, {
+        childList: true, subtree: true, attributes: true,
+        attributeFilter: ['class', 'style', 'hidden', 'aria-hidden']
+      });
+    } catch (e) { /* observer unavailable; the 30s backstop still scans */ }
+    setTimeout(scanForSessionDialog, 2000);
   }
 
   function doExportOrders(force) {
